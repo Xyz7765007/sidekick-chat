@@ -211,6 +211,33 @@ body { position: relative; }
 }
 .tag.tag-rule { color: var(--acc-deep); }
 
+/* Movement type badge — sits inside card-top, below subject-meta */
+.movement-badge {
+  display: inline-block;
+  margin-top: 6px;
+  font-family: 'JetBrains Mono', monospace;
+  font-size: 10px;
+  font-weight: 600;
+  letter-spacing: 0.06em;
+  padding: 3px 8px;
+  border-radius: 6px;
+}
+.badge-hired {
+  background: rgba(91, 168, 142, 0.12);
+  color: var(--pos);
+  box-shadow: var(--neu-shadow-tight);
+}
+.badge-promoted {
+  background: rgba(123, 159, 232, 0.12);
+  color: var(--acc-deep);
+  box-shadow: var(--neu-shadow-tight);
+}
+.badge-exited {
+  background: rgba(201, 154, 79, 0.12);
+  color: var(--warn);
+  box-shadow: var(--neu-shadow-tight);
+}
+
 .ctas {
   display: flex;
   gap: 8px;
@@ -291,7 +318,53 @@ body { position: relative; }
 }
 .toast.show { transform: translateX(-50%) translateY(0); }
 
-/* ─── Chat thread ─────────────────────────────────────────────── */
+/* ─── Movement scan banner ────────────────────────────────────── */
+.scan-banner {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  border-radius: 12px;
+  padding: 12px 16px;
+  margin-bottom: 16px;
+  box-shadow: var(--neu-shadow-tight);
+}
+.scan-banner .scan-text { flex: 1; min-width: 0; }
+.scan-title {
+  font-weight: 600;
+  font-size: 13px;
+  color: var(--t1);
+}
+.scan-detail {
+  font-size: 11px;
+  color: var(--t2);
+  font-family: 'JetBrains Mono', monospace;
+  margin-top: 2px;
+}
+.scan-running {
+  background: rgba(123, 159, 232, 0.12);
+  border: 1px solid rgba(123, 159, 232, 0.25);
+}
+.scan-running .scan-title { color: var(--acc-deep); }
+.scan-done {
+  background: rgba(91, 168, 142, 0.1);
+  border: 1px solid rgba(91, 168, 142, 0.25);
+}
+.scan-done .scan-title { color: var(--pos); }
+.scan-error {
+  background: rgba(196, 107, 107, 0.1);
+  border: 1px solid rgba(196, 107, 107, 0.25);
+}
+.scan-error .scan-title { color: var(--danger); }
+.scan-spinner {
+  width: 18px; height: 18px;
+  border: 2px solid rgba(123, 159, 232, 0.2);
+  border-top-color: var(--acc-deep);
+  border-radius: 50%;
+  animation: spin 0.8s linear infinite;
+  flex-shrink: 0;
+}
+.scan-check { font-size: 20px; color: var(--pos); flex-shrink: 0; }
+.scan-x { font-size: 18px; color: var(--danger); flex-shrink: 0; }
 .chat-thread {
   margin-top: 28px;
   padding-top: 20px;
