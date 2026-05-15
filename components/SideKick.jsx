@@ -8,14 +8,15 @@ import { useEffect, useRef, useState, useCallback } from "react";
 // Polls /api/feed every 30s. Renders each task as a card with score
 // badge, signal text, and CTAs (Open Link, Mark Done, Skip).
 //
-// CTA click flow:
-//   1. Card slides out (optimistic UI)
-//   2. POST /api/action → SignalScope → Airtable
-//   3. On success, card removed from list + count decremented
-//   4. On error, card slides back in + toast shown
+// Chat input at the bottom — type commands like:
+//   "scan"         → trigger a Top X scan (uses first available rule)
+//   "scan top 50"  → trigger a specific rule by name match
+//   "help"         → list commands
+//   "status"       → show pending count
+//   "refresh"      → re-fetch the feed
 //
-// Empty state: "All clear" message.
-// Error state: toast for transient errors, full error block if feed fetch fails.
+// Command parsing is keyword-based for v1. Future iteration can swap
+// in Claude API for natural-language understanding.
 // ═══════════════════════════════════════════════════════════════════
 
 const POLL_INTERVAL_MS = 30000;
@@ -26,12 +27,23 @@ export default function SideKick() {
   const [count, setCount] = useState(0);
   const [loading, setLoading] = useState(true);
   const [fetchError, setFetchError] = useState(null);
-  const [leaving, setLeaving] = useState(new Set()); // task IDs currently animating out
+  const [leaving, setLeaving] = useState(new Set());
   const [toast, setToast] = useState("");
 
-  // Cursor spotlight position
+  // Chat state
+  const [messages, setMessages] = useState([
+    {
+      id: "welcome",
+      role: "bot",
+      text: "Hey. I'll show pending tasks above. Try typing 'scan' to refresh the queue, or 'help' to see commands.",
+    },
+  ]);
+  const [input, setInput] = useState("");
+  const [chatBusy, setChatBusy] = useState(false);
+  const chatScrollRef = useRef(null);
+
+  // Cursor spotlight
   const [cursor, setCursor] = useState({ x: -1000, y: -1000 });
-  const spotlightRef = useRef(null);
 
   // ─── Fetch feed ─────────────────────────────────────────────────
   const fetchFeed = useCallback(async () => {
@@ -65,17 +77,22 @@ export default function SideKick() {
     return () => window.removeEventListener("mousemove", onMove);
   }, []);
 
-  // ─── Toast helper ───────────────────────────────────────────────
+  // ─── Chat auto-scroll ───────────────────────────────────────────
+  useEffect(() => {
+    if (chatScrollRef.current) {
+      chatScrollRef.current.scrollTop = chatScrollRef.current.scrollHeight;
+    }
+  }, [messages]);
+
+  // ─── Toast ──────────────────────────────────────────────────────
   function showToast(msg, ms = 2400) {
     setToast(msg);
     setTimeout(() => setToast(""), ms);
   }
 
-  // ─── Action handler ─────────────────────────────────────────────
+  // ─── Action handler (Mark Done / Skip) ──────────────────────────
   async function handleAction(taskId, action) {
-    // Optimistic: start slide-out animation
     setLeaving((s) => new Set([...s, taskId]));
-
     try {
       const r = await fetch("/api/action", {
         method: "POST",
@@ -84,40 +101,108 @@ export default function SideKick() {
       });
       const data = await r.json();
       if (data.ok) {
-        // After animation, remove from list + decrement count
         setTimeout(() => {
           setCards((c) => c.filter((card) => card.id !== taskId));
           setCount((n) => Math.max(0, n - 1));
-          setLeaving((s) => {
-            const ns = new Set(s);
-            ns.delete(taskId);
-            return ns;
-          });
+          setLeaving((s) => { const ns = new Set(s); ns.delete(taskId); return ns; });
         }, 300);
         showToast(action === "done" ? "Marked done ✓" : "Skipped");
       } else {
-        // Revert animation
-        setLeaving((s) => {
-          const ns = new Set(s);
-          ns.delete(taskId);
-          return ns;
-        });
+        setLeaving((s) => { const ns = new Set(s); ns.delete(taskId); return ns; });
         showToast(`Error: ${data.error || "Action failed"}`, 4000);
       }
     } catch (e) {
-      setLeaving((s) => {
-        const ns = new Set(s);
-        ns.delete(taskId);
-        return ns;
-      });
+      setLeaving((s) => { const ns = new Set(s); ns.delete(taskId); return ns; });
       showToast(`Network error: ${e.message}`, 4000);
     }
   }
 
+  // ─── Chat helpers ───────────────────────────────────────────────
+  function pushMessage(role, text) {
+    const id = `${Date.now()}-${Math.random().toString(36).slice(2, 6)}`;
+    setMessages((m) => [...m, { id, role, text }]);
+    return id;
+  }
+  function updateMessage(id, text) {
+    setMessages((m) => m.map((x) => (x.id === id ? { ...x, text } : x)));
+  }
+
+  // ─── Command parser ─────────────────────────────────────────────
+  function parseCommand(raw) {
+    const t = raw.toLowerCase().trim();
+    if (!t) return { type: "noop" };
+
+    if (/^(help|\?|commands|what can you do)$/.test(t)) return { type: "help" };
+    if (/^(status|count|how many|pending)$/.test(t)) return { type: "status" };
+    if (/^(refresh|reload|update)$/.test(t)) return { type: "refresh" };
+
+    // scan / rescan / run scan, with optional rule name
+    const scanMatch = t.match(/^(?:scan|rescan|run scan|run a scan)\s*(.*)$/);
+    if (scanMatch) return { type: "scan", ruleName: scanMatch[1].trim() || null };
+
+    return { type: "unknown" };
+  }
+
+  // ─── Chat: submit ───────────────────────────────────────────────
+  async function handleSubmit(e) {
+    e?.preventDefault();
+    const text = input.trim();
+    if (!text || chatBusy) return;
+
+    pushMessage("user", text);
+    setInput("");
+    setChatBusy(true);
+
+    const cmd = parseCommand(text);
+
+    try {
+      if (cmd.type === "help") {
+        pushMessage("bot",
+          "Commands:\n" +
+          "• scan — refresh the task queue using the first scoring rule\n" +
+          "• scan <name> — use a specific rule (e.g. 'scan top 50 leads')\n" +
+          "• status — how many pending tasks\n" +
+          "• refresh — re-fetch the feed without scanning\n" +
+          "• help — this list"
+        );
+      } else if (cmd.type === "status") {
+        pushMessage("bot", `${count} task${count === 1 ? "" : "s"} pending.`);
+      } else if (cmd.type === "refresh") {
+        pushMessage("bot", "Refreshing…");
+        await fetchFeed();
+        pushMessage("bot", `Done. ${count} pending.`);
+      } else if (cmd.type === "scan") {
+        const pendingId = pushMessage("bot", cmd.ruleName ? `Running scan: "${cmd.ruleName}"…` : "Running scan…");
+        try {
+          const r = await fetch("/api/scan", {
+            method: "POST",
+            headers: { "Content-Type": "application/json" },
+            body: JSON.stringify({ ruleName: cmd.ruleName }),
+          });
+          const data = await r.json();
+          if (data.ok) {
+            const created = data.tasksCreated || 0;
+            const total = data.totalRecords ? ` (scanned ${data.totalRecords} ${data.scanTarget || "records"})` : "";
+            updateMessage(pendingId,
+              `✓ Scan complete. ${created} task${created === 1 ? "" : "s"} written.${total}\n` +
+              `Rule: ${data.ruleUsed || "(unknown)"}${data.aiScored ? " · AI scored" : ""}`
+            );
+            await fetchFeed();
+          } else {
+            updateMessage(pendingId, `✗ Scan failed: ${data.error || "Unknown error"}`);
+          }
+        } catch (e) {
+          updateMessage(pendingId, `✗ Network error: ${e.message}`);
+        }
+      } else if (cmd.type === "unknown") {
+        pushMessage("bot", `Not sure what "${text}" means. Try 'scan' or 'help'.`);
+      }
+    } finally {
+      setChatBusy(false);
+    }
+  }
+
   // ─── Render helpers ─────────────────────────────────────────────
-  // The chatbot subject prefers lead_name, falls back to company (some
-  // Veloka tasks have the lead name in Company field due to import quirk),
-  // then "Untitled".
   function getSubject(card) {
     return card.lead_name || card.company || "Untitled task";
   }
@@ -131,7 +216,6 @@ export default function SideKick() {
   return (
     <>
       <div
-        ref={spotlightRef}
         className="spotlight"
         style={{ left: cursor.x, top: cursor.y, opacity: cursor.x < 0 ? 0 : 1 }}
         aria-hidden="true"
@@ -164,9 +248,7 @@ export default function SideKick() {
         )}
 
         {!loading && fetchError && (
-          <div className="error">
-            Feed error: {fetchError}
-          </div>
+          <div className="error">Feed error: {fetchError}</div>
         )}
 
         {!loading && !fetchError && cards.length === 0 && (
@@ -191,10 +273,53 @@ export default function SideKick() {
             ))}
           </div>
         )}
+
+        {/* Chat thread */}
+        <div className="chat-thread" ref={chatScrollRef}>
+          {messages.map((m) => (
+            <ChatBubble key={m.id} msg={m} />
+          ))}
+        </div>
       </main>
+
+      {/* Sticky chat input */}
+      <div className="chat-input-wrap">
+        <div className="chat-input-inner">
+          <input
+            type="text"
+            value={input}
+            onChange={(e) => setInput(e.target.value)}
+            onKeyDown={(e) => { if (e.key === "Enter") handleSubmit(e); }}
+            placeholder={chatBusy ? "Working…" : "Type 'scan' or 'help'"}
+            disabled={chatBusy}
+            className="chat-input"
+            autoComplete="off"
+            autoCapitalize="off"
+            autoCorrect="off"
+            spellCheck="false"
+          />
+          <button
+            onClick={handleSubmit}
+            disabled={chatBusy || !input.trim()}
+            className="chat-send"
+            aria-label="Send"
+          >
+            {chatBusy ? <span className="spinner spinner-sm" /> : "→"}
+          </button>
+        </div>
+      </div>
 
       <div className={`toast ${toast ? "show" : ""}`}>{toast}</div>
     </>
+  );
+}
+
+function ChatBubble({ msg }) {
+  return (
+    <div className={`chat-msg chat-msg-${msg.role}`}>
+      {msg.role === "bot" && <div className="chat-avatar"><div className="dot" /></div>}
+      <div className="chat-bubble">{msg.text}</div>
+    </div>
   );
 }
 
@@ -236,18 +361,10 @@ function Card({ card, leaving, subject, meta, onAction }) {
             ↗ Open Link
           </a>
         )}
-        <button
-          className="btn primary"
-          disabled={isDisabled}
-          onClick={() => onAction(card.id, "done")}
-        >
+        <button className="btn primary" disabled={isDisabled} onClick={() => onAction(card.id, "done")}>
           ✓ Mark Done
         </button>
-        <button
-          className="btn danger"
-          disabled={isDisabled}
-          onClick={() => onAction(card.id, "skip")}
-        >
+        <button className="btn danger" disabled={isDisabled} onClick={() => onAction(card.id, "skip")}>
           Skip
         </button>
       </div>
