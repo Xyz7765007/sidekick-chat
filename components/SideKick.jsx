@@ -193,9 +193,21 @@ export default function SideKick() {
       });
       const data = await r.json();
       if (data.ok && data.phone) {
-        // Patch the card in state with the new phone — keeps order, no flicker
-        setCards((c) => c.map(card => card.id === taskId ? { ...card, lead_phone: data.phone } : card));
-        showToast(`Phone found: ${data.phone}`);
+        // Patch the card in state with the new phone + phone type (so the
+        // Call button can show what kind it is in the tooltip)
+        setCards((c) => c.map(card => card.id === taskId ? {
+          ...card,
+          lead_phone: data.phone,
+          lead_phone_type: data.phoneType || "",
+          lead_phone_description: data.phoneTypeDescription || "",
+        } : card));
+        // Toast tells operator WHICH type — mobile is gold, company main = switchboard
+        const typeLabel = {
+          mobile: "📱 Mobile",
+          company_main: "🏢 Company main line",
+          other_listed: "☎ Listed phone",
+        }[data.phoneType] || "Phone";
+        showToast(`${typeLabel}: ${data.phone}`, 3500);
       } else if (data.ok && !data.phone) {
         showToast(data.note || "No phone found in Apollo", 3500);
       } else {
@@ -531,9 +543,9 @@ function Card({ card, leaving, enriching, subject, meta, onAction, onEnrichPhone
             className="btn"
             href={`tel:${card.lead_phone}`}
             onClick={(e) => { if (isDisabled) e.preventDefault(); }}
-            title={card.lead_phone}
+            title={card.lead_phone_description ? `${card.lead_phone} · ${card.lead_phone_description}` : card.lead_phone}
           >
-            ☎ Call
+            ☎ Call{card.lead_phone_type === "mobile" ? " (mobile)" : card.lead_phone_type === "company_main" ? " (company)" : ""}
           </a>
         )}
         {canEnrich && (
