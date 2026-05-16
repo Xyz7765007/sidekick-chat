@@ -829,6 +829,22 @@ function Card({ card, leaving, enriching, subject, meta, onAction, onEnrichPhone
   );
 }
 
+// ─── Score tooltip helper ───────────────────────────────────────
+// Composite score = baseScore (50 default or lead.Score) + decayed bonuses:
+//   - GA visits (up to 20, decays over 7d)
+//   - LinkedIn engagement (up to 15, decays over 14d)
+//   - Top X ICP match (up to 30, decays over 30d)
+// Movement leads are floored at 90 regardless of other signals.
+function buildScoreTooltip(lead) {
+  const parts = [`baseScore ${lead.base_score ?? 50}`];
+  const bb = lead.bonus_breakdown || {};
+  if (bb.li) parts.push(`+${bb.li} LinkedIn engagement`);
+  if (bb.ga) parts.push(`+${bb.ga} GA visits`);
+  if (bb.topx) parts.push(`+${bb.topx} ICP fit`);
+  if (lead.has_movement) parts.push("(movement preempt: floored at 90)");
+  return `Composite score ${lead.score}: ${parts.join(" ")}`;
+}
+
 // ═══════════════════════════════════════════════════════════════════
 // DAILY LINKEDIN BATCH CARD
 // The flagship: 5 highest-scored leads with pre-generated AI connection
@@ -896,18 +912,31 @@ function DailyBatchCard({
 // ═══════════════════════════════════════════════════════════════════
 // BATCH LEAD CARD
 // One lead from a Daily LinkedIn Batch, expanded for review.
-// Shows all 4 pre-generated messages (connection + DM 1/2/3) with char
-// counts visible so operator knows they're within LinkedIn limits.
-// Click any message to inline-edit; saves on blur/enter.
+// Shows the lead's "why now" as CLEAN BULLETS (parsed from rich signal
+// data, not raw text dump), a clickable post link if available, and all
+// 4 pre-generated messages with char counts (green if under limit).
+// Click any message to inline-edit; saves on blur/cmd+enter.
 // ═══════════════════════════════════════════════════════════════════
 function BatchLeadCard({ lead, index, total, onSend, onSkip, onEdit, editingDraft, setEditingDraft }) {
-  const reasons = (lead.why_reasons || "").split(" · ").filter(Boolean);
+  // why_reasons is now clean newline-separated bullets (server-side parsed
+  // from raw Signal text via buildLeadBrief → briefToUiBullets).
+  // Fall back to splitting on " · " for legacy records.
+  const reasons = (lead.why_reasons || "")
+    .split(/\n+/)
+    .flatMap(line => line.includes(" · ") ? line.split(" · ") : [line])
+    .map(s => s.trim())
+    .filter(Boolean);
+
   const FIELDS = [
     { key: "connection_note", label: "Connection note", airtableField: "Generated Connection Note", limit: 300, sentLabel: "sent on accept" },
     { key: "dm1", label: "DM 1", airtableField: "Generated DM 1", limit: 8000, sentLabel: "sent 2d after connect" },
     { key: "dm2", label: "DM 2", airtableField: "Generated DM 2", limit: 8000, sentLabel: "sent 3d after DM 1" },
     { key: "dm3", label: "DM 3", airtableField: "Generated DM 3", limit: 8000, sentLabel: "sent 4d after DM 2" },
   ];
+
+  // Tidy the LinkedIn profile URL display
+  const profileUrl = lead.linkedin_url || "";
+  const profileShort = profileUrl.replace(/^https?:\/\/(www\.)?linkedin\.com\//, "linkedin.com/");
 
   return (
     <div className="batch-lead">
@@ -924,17 +953,26 @@ function BatchLeadCard({ lead, index, total, onSend, onSkip, onEdit, editingDraf
         </div>
       </div>
 
+      {/* Clean why-now bullets — replaces the raw signal blob */}
       {reasons.length > 0 && (
         <div className="batch-lead-reasons">
           {reasons.map((r, i) => <div key={i} className="batch-reason">→ {r}</div>)}
         </div>
       )}
 
-      {lead.linkedin_url && (
-        <div className="batch-lead-link">
-          <a href={lead.linkedin_url} target="_blank" rel="noopener noreferrer">in {lead.linkedin_url.replace(/^https?:\/\/(www\.)?linkedin\.com\//, "linkedin.com/")}</a>
-        </div>
-      )}
+      {/* Profile + post links — separate clickable chips */}
+      <div className="batch-lead-links">
+        {profileUrl && (
+          <a className="batch-link-chip" href={profileUrl} target="_blank" rel="noopener noreferrer">
+            in {profileShort}
+          </a>
+        )}
+        {lead.post_url && (
+          <a className="batch-link-chip" href={lead.post_url} target="_blank" rel="noopener noreferrer">
+            🔗 view post
+          </a>
+        )}
+      </div>
 
       <div className="batch-msgs">
         {FIELDS.map(({ key, label, airtableField, limit, sentLabel }) => {
@@ -1018,7 +1056,10 @@ function TopCallableCard({ lead, enriching, onEnrichPhone }) {
           )}
         </div>
         {typeof lead.score === "number" && (
-          <div className="score">
+          <div
+            className="score"
+            title={buildScoreTooltip(lead)}
+          >
             <span className="score-label">SCORE</span>
             {lead.score}
           </div>
