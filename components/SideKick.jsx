@@ -43,45 +43,89 @@ export default function SideKick() {
   // Movement scan status — polls every 30s, drives the live banner
   const [scanStatus, setScanStatus] = useState(null);
 
-  // ─── LinkedIn outreach review queue ────────────────────────────
-  // AI-drafted invitations + DMs that SignalScope's outreach engine sent
-  // via Unipile. Each one is logged to Sent Messages Review with status
-  // 'needs_review' until a human approves or flags. This is the chatbot's
-  // approval surface for the "Top 10 LinkedIn requests with AI notes"
-  // whiteboard item.
-  const [reviewMessages, setReviewMessages] = useState([]);
-  const [reviewLeaving, setReviewLeaving] = useState(new Set());
+  // ─── LinkedIn auto-batch (Stage 1 — pre-send approval) ─────────
+  // Replaces the old "Sent Messages Review" (which was post-send audit).
+  // Now: Daily 5 LI connection requests with pre-generated AI notes + DM
+  // sequence, awaiting human approval. User clicks Send → Outreach record
+  // flips from pending_approval → queued → cron picks it up → sends.
+  const [autoBatches, setAutoBatches] = useState([]);
+  const [batchLeaving, setBatchLeaving] = useState(new Set());
+  const [batchExpanded, setBatchExpanded] = useState(new Set()); // batch IDs currently "Review one-by-one"
+  const [editingDraft, setEditingDraft] = useState(null); // { recordId, field, text }
+  const [batchGenerating, setBatchGenerating] = useState(false);
 
-  const fetchReviewMessages = useCallback(async () => {
+  // Top callable leads — curated by composite scoring on the server
+  // (replaces old "any task with phone" filter). Refreshed on each feed poll.
+  const [topCallable, setTopCallable] = useState([]);
+
+  const fetchAutoBatches = useCallback(async () => {
     try {
-      const r = await fetch("/api/messages-feed?limit=20", { cache: "no-store" });
+      const r = await fetch("/api/auto-batch/pending", { cache: "no-store" });
       const data = await r.json();
-      if (data.ok) setReviewMessages(data.messages || []);
+      if (data.ok) setAutoBatches(data.batches || []);
     } catch {}
   }, []);
 
-  async function handleMessageAction(messageId, action) {
-    setReviewLeaving((s) => new Set([...s, messageId]));
-    setTimeout(async () => {
-      try {
-        const r = await fetch("/api/message-action", {
-          method: "POST",
-          headers: { "Content-Type": "application/json" },
-          body: JSON.stringify({ messageId, action }),
-        });
-        const data = await r.json();
-        if (data.ok) {
-          setReviewMessages((m) => m.filter(x => x.id !== messageId));
-          showToast(action === "approve" ? "Approved" : "Flagged", 2200);
+  const fetchTopCallable = useCallback(async () => {
+    try {
+      const r = await fetch("/api/top-leads-to-call?n=2", { cache: "no-store" });
+      const data = await r.json();
+      if (data.ok) setTopCallable(data.cards || []);
+    } catch {}
+  }, []);
+
+  async function handleGenerateBatch(force = false) {
+    if (batchGenerating) return;
+    setBatchGenerating(true);
+    showToast("Generating today's batch…", 4000);
+    try {
+      const r = await fetch("/api/auto-batch/generate", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ size: 5, force }),
+      });
+      const data = await r.json();
+      if (data.ok) {
+        if (data.alreadyGeneratedToday) {
+          showToast("Today's batch is ready — review below");
         } else {
-          showToast(`Error: ${data.error || "Action failed"}`, 4000);
+          showToast(`Batch ready · ${data.count || 0} leads · $${(data.costUsd || 0).toFixed(3)}`);
         }
-      } catch (e) {
-        showToast(`Network error: ${e.message}`, 4000);
-      } finally {
-        setReviewLeaving((s) => { const ns = new Set(s); ns.delete(messageId); return ns; });
+        await fetchAutoBatches();
+      } else {
+        showToast(`Error: ${data.error || "Generation failed"}`, 5000);
       }
-    }, 250);
+    } catch (e) {
+      showToast(`Network error: ${e.message}`, 5000);
+    } finally {
+      setBatchGenerating(false);
+    }
+  }
+
+  async function handleBatchAction(action, params = {}) {
+    try {
+      const r = await fetch("/api/auto-batch/action", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ action, ...params }),
+      });
+      const data = await r.json();
+      if (data.ok) {
+        if (action === "send_all") showToast(`✓ ${data.count} sent to outreach queue`, 3000);
+        else if (action === "send_one") showToast("✓ Sent to outreach queue", 2400);
+        else if (action === "skip_all") showToast(`Skipped batch (${data.count})`, 2400);
+        else if (action === "skip_one") showToast("Skipped", 2000);
+        else if (action === "edit") showToast("Saved", 1800);
+        await fetchAutoBatches();
+        return true;
+      } else {
+        showToast(`Error: ${data.error || "Action failed"}`, 4000);
+        return false;
+      }
+    } catch (e) {
+      showToast(`Network error: ${e.message}`, 4000);
+      return false;
+    }
   }
 
   // ─── Fetch feed ─────────────────────────────────────────────────
@@ -135,13 +179,35 @@ export default function SideKick() {
     }
   }, []);
 
+  // Auto-generate trigger: on first chatbot mount of the day, if no
+  // pending batch exists, request one. Idempotent on the server side.
+  const autoGenerateAttemptedRef = useRef(false);
+  useEffect(() => {
+    if (!historyLoaded) return;
+    if (autoGenerateAttemptedRef.current) return;
+    if (autoBatches.length > 0) {
+      autoGenerateAttemptedRef.current = true;
+      return; // already a pending batch — no need to generate
+    }
+    autoGenerateAttemptedRef.current = true;
+    // Fire-and-forget — server enforces idempotency, returns existing
+    // batch if already generated today
+    handleGenerateBatch(false);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [historyLoaded, autoBatches]);
+
   useEffect(() => {
     fetchFeed();
-    fetchReviewMessages();
+    fetchAutoBatches();
+    fetchTopCallable();
     loadHistory();
-    const i = setInterval(() => { fetchFeed(); fetchReviewMessages(); }, POLL_INTERVAL_MS);
+    const i = setInterval(() => {
+      fetchFeed();
+      fetchAutoBatches();
+      fetchTopCallable();
+    }, POLL_INTERVAL_MS);
     return () => clearInterval(i);
-  }, [fetchFeed, fetchReviewMessages, loadHistory]);
+  }, [fetchFeed, fetchAutoBatches, fetchTopCallable, loadHistory]);
 
   // ─── Movement scan status polling ───────────────────────────────
   // Polls every 20s when running (active progress); 60s when idle.
@@ -347,9 +413,19 @@ export default function SideKick() {
               <div className="brand-sub">VELOKA · TASKS</div>
             </div>
           </div>
-          <div className="counter">
-            <span className="count-num">{count}</span>
-            <span style={{ color: "var(--t2)" }}>pending</span>
+          <div className="hdr-r">
+            <button
+              className="hdr-action"
+              onClick={() => handleGenerateBatch(true)}
+              disabled={batchGenerating}
+              title="Regenerate today's LinkedIn batch (replaces existing)"
+            >
+              {batchGenerating ? <><span className="spinner spinner-sm" /> Generating…</> : "↻ Regenerate batch"}
+            </button>
+            <div className="counter">
+              <span className="count-num">{count}</span>
+              <span style={{ color: "var(--t2)" }}>pending</span>
+            </div>
           </div>
         </header>
 
@@ -379,45 +455,66 @@ export default function SideKick() {
           </div>
         )}
 
-        {/* LinkedIn outreach approval queue — sits above tasks because it's
-            time-sensitive (messages already went out via Unipile). Hidden
-            when nothing needs review. */}
-        {reviewMessages.length > 0 && (
+        {/* ─── DAILY LINKEDIN BATCH ─────────────────────────────
+            The flagship feature: 5 highest-scored leads with
+            AI-personalized connection notes + 3-DM sequences,
+            pre-generated and awaiting one-tap approval.
+            Renders only when a pending batch exists. */}
+        {autoBatches.map(batch => (
+          <DailyBatchCard
+            key={batch.batch_id}
+            batch={batch}
+            expanded={batchExpanded.has(batch.batch_id)}
+            onToggleExpand={() => {
+              setBatchExpanded(prev => {
+                const next = new Set(prev);
+                if (next.has(batch.batch_id)) next.delete(batch.batch_id);
+                else next.add(batch.batch_id);
+                return next;
+              });
+            }}
+            onSendAll={() => handleBatchAction("send_all", { batchId: batch.batch_id })}
+            onSkipAll={() => handleBatchAction("skip_all", { batchId: batch.batch_id })}
+            onSendOne={(recordId) => handleBatchAction("send_one", { recordId })}
+            onSkipOne={(recordId) => handleBatchAction("skip_one", { recordId })}
+            onEditField={(recordId, field, newText) => handleBatchAction("edit", { recordId, field, newText })}
+            editingDraft={editingDraft}
+            setEditingDraft={setEditingDraft}
+          />
+        ))}
+
+        {/* ─── TOP LEADS TO CALL (server-curated) ───────────────
+            Composite-scored top N leads with full "why now" reasons.
+            Phone availability is NOT a filter — leads without phone
+            show "Enrich Phone" CTA so operator can pull one on demand. */}
+        {topCallable.length > 0 && (
           <Section
-            icon="✉"
-            title="LinkedIn requests to review"
-            sub="AI-drafted invitations + DMs sent via Unipile, awaiting your approval"
-            count={reviewMessages.length}
+            icon="📞"
+            title="Top leads to call"
+            sub="Highest composite-score · movement preempts · enrich phone on demand"
+            count={topCallable.length}
           >
-            {reviewMessages.map((m) => (
-              <MessageCard
-                key={m.id}
-                message={m}
-                leaving={reviewLeaving.has(m.id)}
-                onAction={handleMessageAction}
+            {topCallable.map(lead => (
+              <TopCallableCard
+                key={lead.id}
+                lead={lead}
+                enriching={enriching.has(lead.id)}
+                onEnrichPhone={() => handleEnrichPhone(lead.id)}
               />
             ))}
           </Section>
         )}
 
         {!loading && !fetchError && cards.length > 0 && (() => {
-          // ─── Section grouping ────────────────────────────────────
-          // "Top 2 to call" picks the 2 highest-score callable tasks. Those
-          // 2 only show in the Top 2 section, NOT in their natural type
-          // section, to avoid duplicate display. The remaining callable
-          // tasks still show in their type section (with the Call CTA on
-          // each card, so operator can still call them — they just don't
-          // get the dedicated "Top 2" surface).
-          const sortedByScore = [...cards].sort((a, b) => (b.score || 0) - (a.score || 0));
-          const topCallable = sortedByScore.filter(c => !!c.lead_phone).slice(0, 2);
-          const promoted = new Set(topCallable.map(c => c.id));
-
-          const movements = cards.filter(c => c.task_type === "lead_movement" && !promoted.has(c.id));
-          const liComments = cards.filter(c => c.task_type === "linkedin_engagement" && !promoted.has(c.id));
-          const gaVisitors = cards.filter(c => c.task_type === "engagement" && !promoted.has(c.id));
-          const topLeads = cards.filter(c => c.task_type === "top_x" && !promoted.has(c.id));
+          // ─── Task sections (movements, comments, GA, top X, other) ─
+          // No more local "Top 2 to call" — that's now server-curated
+          // via topCallable above. We also no longer dedupe by phone
+          // since phone is no longer a filter.
+          const movements = cards.filter(c => c.task_type === "lead_movement");
+          const liComments = cards.filter(c => c.task_type === "linkedin_engagement");
+          const gaVisitors = cards.filter(c => c.task_type === "engagement");
+          const topLeads = cards.filter(c => c.task_type === "top_x");
           const accountedFor = new Set([
-            ...promoted,
             ...movements.map(c => c.id),
             ...liComments.map(c => c.id),
             ...gaVisitors.map(c => c.id),
@@ -426,7 +523,6 @@ export default function SideKick() {
           const other = cards.filter(c => !accountedFor.has(c.id));
 
           const sections = [
-            { key: "top2call", icon: "📞", title: "Top 2 to call", sub: "Highest-score tasks with a phone number — call now", items: topCallable },
             { key: "movements", icon: "📈", title: "Account movements", sub: "Hires, promotions, exits", items: movements },
             { key: "comments", icon: "💬", title: "LinkedIn posts to comment", sub: "AI-suggested engagement on lead posts", items: liComments },
             { key: "ga", icon: "🌐", title: "Website engagement", sub: "Leads visiting your site", items: gaVisitors },
@@ -728,6 +824,233 @@ function Card({ card, leaving, enriching, subject, meta, onAction, onEnrichPhone
         <button className="btn danger" disabled={isDisabled} onClick={() => onAction(card.id, "skip")}>
           Skip
         </button>
+      </div>
+    </div>
+  );
+}
+
+// ═══════════════════════════════════════════════════════════════════
+// DAILY LINKEDIN BATCH CARD
+// The flagship: 5 highest-scored leads with pre-generated AI connection
+// notes + 3-DM sequences. One meta-card collapsed; expands inline into
+// per-lead BatchLeadCards on "Review one-by-one".
+// ═══════════════════════════════════════════════════════════════════
+function DailyBatchCard({
+  batch, expanded, onToggleExpand,
+  onSendAll, onSkipAll, onSendOne, onSkipOne, onEditField,
+  editingDraft, setEditingDraft,
+}) {
+  const count = batch.leads?.length || 0;
+  if (count === 0) return null;
+
+  const totalConnChars = (batch.leads || []).reduce((s, l) => s + (l.connection_note?.length || 0), 0);
+  const avgConnChars = Math.round(totalConnChars / count);
+
+  return (
+    <div className="batch-card">
+      <div className="batch-hdr">
+        <div className="batch-hdr-l">
+          <span className="batch-icon">🤝</span>
+          <div>
+            <div className="batch-title">Daily LinkedIn batch · {count} ready</div>
+            <div className="batch-sub">
+              Top {count} highest-scored Veloka leads · AI-personalized connection notes + 3-DM sequences · avg {avgConnChars} chars
+            </div>
+          </div>
+        </div>
+      </div>
+
+      <div className="batch-ctas">
+        <button className="btn primary" onClick={onSendAll}>
+          ▶ Send all {count}
+        </button>
+        <button className="btn" onClick={onToggleExpand}>
+          {expanded ? "▼ Hide reviews" : "👀 Review one-by-one"}
+        </button>
+        <button className="btn danger" onClick={onSkipAll}>
+          ⏭ Skip today
+        </button>
+      </div>
+
+      {expanded && (
+        <div className="batch-expanded">
+          {batch.leads.map((lead, idx) => (
+            <BatchLeadCard
+              key={lead.id}
+              lead={lead}
+              index={idx + 1}
+              total={count}
+              onSend={() => onSendOne(lead.id)}
+              onSkip={() => onSkipOne(lead.id)}
+              onEdit={(field, newText) => onEditField(lead.id, field, newText)}
+              editingDraft={editingDraft}
+              setEditingDraft={setEditingDraft}
+            />
+          ))}
+        </div>
+      )}
+    </div>
+  );
+}
+
+// ═══════════════════════════════════════════════════════════════════
+// BATCH LEAD CARD
+// One lead from a Daily LinkedIn Batch, expanded for review.
+// Shows all 4 pre-generated messages (connection + DM 1/2/3) with char
+// counts visible so operator knows they're within LinkedIn limits.
+// Click any message to inline-edit; saves on blur/enter.
+// ═══════════════════════════════════════════════════════════════════
+function BatchLeadCard({ lead, index, total, onSend, onSkip, onEdit, editingDraft, setEditingDraft }) {
+  const reasons = (lead.why_reasons || "").split(" · ").filter(Boolean);
+  const FIELDS = [
+    { key: "connection_note", label: "Connection note", airtableField: "Generated Connection Note", limit: 300, sentLabel: "sent on accept" },
+    { key: "dm1", label: "DM 1", airtableField: "Generated DM 1", limit: 8000, sentLabel: "sent 2d after connect" },
+    { key: "dm2", label: "DM 2", airtableField: "Generated DM 2", limit: 8000, sentLabel: "sent 3d after DM 1" },
+    { key: "dm3", label: "DM 3", airtableField: "Generated DM 3", limit: 8000, sentLabel: "sent 4d after DM 2" },
+  ];
+
+  return (
+    <div className="batch-lead">
+      <div className="batch-lead-hdr">
+        <div className="batch-lead-name">
+          <span className="batch-lead-index">{index}/{total}</span>
+          {lead.lead_name}
+          {lead.title && <span className="batch-lead-title"> · {lead.title}</span>}
+          {lead.company && <span className="batch-lead-company"> @ {lead.company}</span>}
+        </div>
+        <div className="batch-lead-score">
+          {lead.composite_score >= 1000 && <span className="badge-movement">🔥 Movement</span>}
+          <span className="batch-score-val">Score {lead.composite_score}</span>
+        </div>
+      </div>
+
+      {reasons.length > 0 && (
+        <div className="batch-lead-reasons">
+          {reasons.map((r, i) => <div key={i} className="batch-reason">→ {r}</div>)}
+        </div>
+      )}
+
+      {lead.linkedin_url && (
+        <div className="batch-lead-link">
+          <a href={lead.linkedin_url} target="_blank" rel="noopener noreferrer">in {lead.linkedin_url.replace(/^https?:\/\/(www\.)?linkedin\.com\//, "linkedin.com/")}</a>
+        </div>
+      )}
+
+      <div className="batch-msgs">
+        {FIELDS.map(({ key, label, airtableField, limit, sentLabel }) => {
+          const text = lead[key] || "";
+          const isEditing = editingDraft?.recordId === lead.id && editingDraft?.field === airtableField;
+          const overLimit = text.length > limit;
+          return (
+            <div key={key} className="batch-msg">
+              <div className="batch-msg-hdr">
+                <span className="batch-msg-label">{label}</span>
+                <span className="batch-msg-meta">
+                  <span className={overLimit ? "char-over" : "char-ok"}>{text.length} chars</span>
+                  <span className="batch-msg-sent"> · {sentLabel}</span>
+                </span>
+              </div>
+              {isEditing ? (
+                <textarea
+                  className="batch-msg-edit"
+                  defaultValue={text}
+                  autoFocus
+                  rows={Math.max(2, Math.min(8, Math.ceil(text.length / 80)))}
+                  onBlur={(e) => {
+                    const v = e.target.value.trim();
+                    if (v !== text) onEdit(airtableField, v);
+                    setEditingDraft(null);
+                  }}
+                  onKeyDown={(e) => {
+                    if (e.key === "Escape") {
+                      e.target.value = text;
+                      setEditingDraft(null);
+                    }
+                    if (e.key === "Enter" && (e.metaKey || e.ctrlKey)) {
+                      e.target.blur();
+                    }
+                  }}
+                />
+              ) : (
+                <div
+                  className="batch-msg-text"
+                  onClick={() => setEditingDraft({ recordId: lead.id, field: airtableField, text })}
+                  title="Click to edit"
+                >
+                  {text || <span className="batch-msg-empty">(empty — click to write)</span>}
+                </div>
+              )}
+            </div>
+          );
+        })}
+      </div>
+
+      <div className="batch-lead-ctas">
+        <button className="btn primary" onClick={onSend}>✓ Send this lead</button>
+        <button className="btn danger" onClick={onSkip}>⏭ Skip</button>
+      </div>
+    </div>
+  );
+}
+
+// ═══════════════════════════════════════════════════════════════════
+// TOP CALLABLE CARD
+// Curated by composite score on the server (movement preempts → GA +
+// LinkedIn engagement → base score). Phone is NOT required — if absent,
+// shows "Enrich Phone" CTA instead of "Call".
+// ═══════════════════════════════════════════════════════════════════
+function TopCallableCard({ lead, enriching, onEnrichPhone }) {
+  const reasons = lead.reasons || [];
+  const hasPhone = !!lead.lead_phone;
+
+  return (
+    <div className="card entering">
+      <div className="card-top">
+        <div>
+          <div className="subject">{lead.lead_name}</div>
+          <div className="subject-meta">
+            {[lead.lead_title, lead.company].filter(Boolean).join(" · ")}
+          </div>
+          {lead.has_movement && lead.movement_type && (
+            <div className={`movement-badge badge-${lead.movement_type.toLowerCase()}`}>
+              🔥 {lead.movement_type === "Hired" ? "NEW HIRE" : lead.movement_type === "Promoted" ? "PROMOTED" : "EXITED"}
+            </div>
+          )}
+        </div>
+        {typeof lead.score === "number" && (
+          <div className="score">
+            <span className="score-label">SCORE</span>
+            {lead.score}
+          </div>
+        )}
+      </div>
+
+      {reasons.length > 0 && (
+        <div className="callable-reasons">
+          {reasons.map((r, i) => <div key={i} className="callable-reason">→ {r}</div>)}
+        </div>
+      )}
+
+      <div className="ctas">
+        {lead.lead_linkedin && (
+          <a className="btn" href={lead.lead_linkedin} target="_blank" rel="noopener noreferrer">
+            in LinkedIn
+          </a>
+        )}
+        {hasPhone ? (
+          <a className="btn primary" href={`tel:${lead.lead_phone}`}>
+            ☎ Call {lead.lead_phone}
+          </a>
+        ) : (
+          <button
+            className="btn primary"
+            disabled={enriching}
+            onClick={onEnrichPhone}
+            title="Use Apollo to find this lead's phone number"
+          >
+            {enriching ? <><span className="spinner spinner-sm" /> Enriching…</> : "☎ Enrich Phone"}
+          </button>
+        )}
       </div>
     </div>
   );

@@ -568,3 +568,246 @@ body { position: relative; }
   .hdr { margin-bottom: 18px; }
   .spotlight { display: none; }
 }
+
+/* ═══════════════════════════════════════════════════════════════════
+   HEADER ACTION BUTTON (Regenerate batch)
+   ═══════════════════════════════════════════════════════════════════ */
+.hdr-r {
+  display: flex; align-items: center; gap: 14px;
+}
+.hdr-action {
+  background: rgba(255, 255, 255, 0.06);
+  color: var(--t1);
+  border: 1px solid rgba(255, 255, 255, 0.1);
+  padding: 7px 12px;
+  border-radius: 8px;
+  font-size: 12px;
+  font-weight: 500;
+  cursor: pointer;
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  transition: background 0.15s, border-color 0.15s;
+}
+.hdr-action:hover:not(:disabled) {
+  background: rgba(255, 255, 255, 0.1);
+  border-color: rgba(255, 255, 255, 0.2);
+}
+.hdr-action:disabled { opacity: 0.5; cursor: not-allowed; }
+
+/* ═══════════════════════════════════════════════════════════════════
+   DAILY BATCH CARD — top-of-feed meta-card
+   ═══════════════════════════════════════════════════════════════════ */
+.batch-card {
+  background: linear-gradient(135deg, rgba(120, 180, 240, 0.08), rgba(150, 130, 220, 0.06));
+  border: 1.5px solid rgba(120, 180, 240, 0.25);
+  border-radius: 14px;
+  padding: 20px 22px;
+  margin-bottom: 24px;
+  position: relative;
+}
+
+.batch-hdr {
+  display: flex; justify-content: space-between; align-items: flex-start;
+  margin-bottom: 14px;
+}
+.batch-hdr-l {
+  display: flex; gap: 12px; align-items: flex-start;
+}
+.batch-icon {
+  font-size: 24px;
+  line-height: 1;
+  margin-top: 2px;
+}
+.batch-title {
+  font-size: 16px;
+  font-weight: 600;
+  color: var(--t1);
+  margin-bottom: 4px;
+}
+.batch-sub {
+  font-size: 12.5px;
+  color: var(--t2);
+  line-height: 1.5;
+}
+
+.batch-ctas {
+  display: flex; gap: 10px; flex-wrap: wrap;
+}
+.batch-ctas .btn { font-size: 13px; padding: 8px 14px; }
+
+.batch-expanded {
+  margin-top: 18px;
+  display: flex; flex-direction: column; gap: 14px;
+  padding-top: 18px;
+  border-top: 1px solid rgba(255, 255, 255, 0.08);
+}
+
+/* ─── Batch lead card (one per lead in expanded view) ─── */
+.batch-lead {
+  background: rgba(0, 0, 0, 0.18);
+  border: 1px solid rgba(255, 255, 255, 0.07);
+  border-radius: 10px;
+  padding: 14px 16px;
+}
+.batch-lead-hdr {
+  display: flex; justify-content: space-between; align-items: center;
+  margin-bottom: 8px;
+  gap: 12px;
+}
+.batch-lead-name {
+  font-size: 14px;
+  font-weight: 600;
+  color: var(--t1);
+}
+.batch-lead-index {
+  display: inline-block;
+  background: rgba(255, 255, 255, 0.08);
+  color: var(--t2);
+  padding: 2px 7px;
+  border-radius: 4px;
+  font-size: 11px;
+  font-weight: 500;
+  margin-right: 8px;
+}
+.batch-lead-title { color: var(--t2); font-weight: 400; font-size: 13px; }
+.batch-lead-company { color: var(--t2); font-weight: 400; font-size: 13px; }
+.batch-lead-score {
+  display: flex; align-items: center; gap: 8px;
+  flex-shrink: 0;
+}
+.batch-score-val {
+  background: rgba(255, 255, 255, 0.06);
+  padding: 3px 8px;
+  border-radius: 4px;
+  font-size: 11px;
+  color: var(--t1);
+  font-weight: 500;
+}
+.badge-movement {
+  background: rgba(255, 120, 60, 0.15);
+  color: #ff9866;
+  padding: 3px 8px;
+  border-radius: 4px;
+  font-size: 11px;
+  font-weight: 600;
+}
+
+.batch-lead-reasons {
+  margin: 8px 0 10px;
+}
+.batch-reason {
+  font-size: 12.5px;
+  color: var(--t2);
+  margin-bottom: 3px;
+  line-height: 1.5;
+}
+
+.batch-lead-link {
+  margin-bottom: 12px;
+  font-size: 12px;
+}
+.batch-lead-link a {
+  color: rgba(120, 180, 240, 0.7);
+  text-decoration: none;
+}
+.batch-lead-link a:hover { color: rgba(120, 180, 240, 1); }
+
+/* ─── Pre-generated messages inside batch lead ─── */
+.batch-msgs {
+  margin: 14px 0;
+  display: flex; flex-direction: column; gap: 10px;
+}
+.batch-msg {
+  background: rgba(255, 255, 255, 0.025);
+  border-left: 2px solid rgba(120, 180, 240, 0.4);
+  padding: 8px 12px;
+  border-radius: 0 6px 6px 0;
+}
+.batch-msg-hdr {
+  display: flex; justify-content: space-between; align-items: center;
+  margin-bottom: 5px;
+}
+.batch-msg-label {
+  font-size: 11px;
+  font-weight: 600;
+  color: var(--t1);
+  text-transform: uppercase;
+  letter-spacing: 0.4px;
+}
+.batch-msg-meta {
+  font-size: 10.5px;
+  color: var(--t2);
+}
+.char-ok { color: rgba(120, 200, 140, 0.85); font-weight: 500; }
+.char-over { color: rgba(255, 100, 100, 0.95); font-weight: 600; }
+.batch-msg-sent { color: var(--t3, var(--t2)); }
+.batch-msg-text {
+  font-size: 13px;
+  color: var(--t1);
+  line-height: 1.55;
+  cursor: text;
+  padding: 4px 0;
+  white-space: pre-wrap;
+  word-wrap: break-word;
+  transition: background 0.15s;
+}
+.batch-msg-text:hover {
+  background: rgba(255, 255, 255, 0.025);
+  border-radius: 4px;
+}
+.batch-msg-empty {
+  color: var(--t2);
+  font-style: italic;
+}
+.batch-msg-edit {
+  width: 100%;
+  background: rgba(0, 0, 0, 0.3);
+  border: 1px solid rgba(120, 180, 240, 0.5);
+  color: var(--t1);
+  font-size: 13px;
+  line-height: 1.55;
+  font-family: inherit;
+  padding: 8px 10px;
+  border-radius: 6px;
+  resize: vertical;
+  margin-top: 3px;
+}
+.batch-msg-edit:focus { outline: none; border-color: rgba(120, 180, 240, 0.9); }
+
+.batch-lead-ctas {
+  display: flex; gap: 8px;
+  margin-top: 12px;
+  padding-top: 12px;
+  border-top: 1px solid rgba(255, 255, 255, 0.05);
+}
+.batch-lead-ctas .btn { font-size: 12px; padding: 6px 12px; }
+
+/* ═══════════════════════════════════════════════════════════════════
+   TOP CALLABLE CARD — server-curated, with why-now reasons
+   ═══════════════════════════════════════════════════════════════════ */
+.callable-reasons {
+  margin: 10px 0 12px;
+  padding: 8px 12px;
+  background: rgba(255, 200, 100, 0.04);
+  border-left: 2px solid rgba(255, 200, 100, 0.4);
+  border-radius: 0 6px 6px 0;
+}
+.callable-reason {
+  font-size: 12.5px;
+  color: var(--t1);
+  margin-bottom: 3px;
+  line-height: 1.5;
+}
+.callable-reason:last-child { margin-bottom: 0; }
+
+/* Mobile tweaks */
+@media (max-width: 520px) {
+  .batch-card { padding: 16px; }
+  .hdr-action { font-size: 11px; padding: 6px 10px; }
+  .hdr-r { gap: 8px; }
+  .batch-lead { padding: 12px; }
+  .batch-msg { padding: 6px 10px; }
+  .batch-ctas { flex-direction: column; }
+  .batch-ctas .btn { width: 100%; justify-content: center; }
+}
