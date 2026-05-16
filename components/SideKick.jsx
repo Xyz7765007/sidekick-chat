@@ -43,6 +43,47 @@ export default function SideKick() {
   // Movement scan status — polls every 30s, drives the live banner
   const [scanStatus, setScanStatus] = useState(null);
 
+  // ─── LinkedIn outreach review queue ────────────────────────────
+  // AI-drafted invitations + DMs that SignalScope's outreach engine sent
+  // via Unipile. Each one is logged to Sent Messages Review with status
+  // 'needs_review' until a human approves or flags. This is the chatbot's
+  // approval surface for the "Top 10 LinkedIn requests with AI notes"
+  // whiteboard item.
+  const [reviewMessages, setReviewMessages] = useState([]);
+  const [reviewLeaving, setReviewLeaving] = useState(new Set());
+
+  const fetchReviewMessages = useCallback(async () => {
+    try {
+      const r = await fetch("/api/messages-feed?limit=20", { cache: "no-store" });
+      const data = await r.json();
+      if (data.ok) setReviewMessages(data.messages || []);
+    } catch {}
+  }, []);
+
+  async function handleMessageAction(messageId, action) {
+    setReviewLeaving((s) => new Set([...s, messageId]));
+    setTimeout(async () => {
+      try {
+        const r = await fetch("/api/message-action", {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ messageId, action }),
+        });
+        const data = await r.json();
+        if (data.ok) {
+          setReviewMessages((m) => m.filter(x => x.id !== messageId));
+          showToast(action === "approve" ? "Approved" : "Flagged", 2200);
+        } else {
+          showToast(`Error: ${data.error || "Action failed"}`, 4000);
+        }
+      } catch (e) {
+        showToast(`Network error: ${e.message}`, 4000);
+      } finally {
+        setReviewLeaving((s) => { const ns = new Set(s); ns.delete(messageId); return ns; });
+      }
+    }, 250);
+  }
+
   // ─── Fetch feed ─────────────────────────────────────────────────
   const fetchFeed = useCallback(async () => {
     try {
@@ -96,10 +137,11 @@ export default function SideKick() {
 
   useEffect(() => {
     fetchFeed();
+    fetchReviewMessages();
     loadHistory();
-    const i = setInterval(fetchFeed, POLL_INTERVAL_MS);
+    const i = setInterval(() => { fetchFeed(); fetchReviewMessages(); }, POLL_INTERVAL_MS);
     return () => clearInterval(i);
-  }, [fetchFeed, loadHistory]);
+  }, [fetchFeed, fetchReviewMessages, loadHistory]);
 
   // ─── Movement scan status polling ───────────────────────────────
   // Polls every 20s when running (active progress); 60s when idle.
@@ -337,22 +379,78 @@ export default function SideKick() {
           </div>
         )}
 
-        {!loading && !fetchError && cards.length > 0 && (
-          <div className="feed">
-            {cards.map((card) => (
-              <Card
-                key={card.id}
-                card={card}
-                leaving={leaving.has(card.id)}
-                enriching={enriching.has(card.id)}
-                subject={getSubject(card)}
-                meta={getMeta(card)}
-                onAction={handleAction}
-                onEnrichPhone={handleEnrichPhone}
+        {/* LinkedIn outreach approval queue — sits above tasks because it's
+            time-sensitive (messages already went out via Unipile). Hidden
+            when nothing needs review. */}
+        {reviewMessages.length > 0 && (
+          <Section
+            icon="✉"
+            title="LinkedIn requests to review"
+            sub="AI-drafted invitations + DMs sent via Unipile, awaiting your approval"
+            count={reviewMessages.length}
+          >
+            {reviewMessages.map((m) => (
+              <MessageCard
+                key={m.id}
+                message={m}
+                leaving={reviewLeaving.has(m.id)}
+                onAction={handleMessageAction}
               />
             ))}
-          </div>
+          </Section>
         )}
+
+        {!loading && !fetchError && cards.length > 0 && (() => {
+          // ─── Section grouping ────────────────────────────────────
+          // "Top 2 to call" picks the 2 highest-score callable tasks. Those
+          // 2 only show in the Top 2 section, NOT in their natural type
+          // section, to avoid duplicate display. The remaining callable
+          // tasks still show in their type section (with the Call CTA on
+          // each card, so operator can still call them — they just don't
+          // get the dedicated "Top 2" surface).
+          const sortedByScore = [...cards].sort((a, b) => (b.score || 0) - (a.score || 0));
+          const topCallable = sortedByScore.filter(c => !!c.lead_phone).slice(0, 2);
+          const promoted = new Set(topCallable.map(c => c.id));
+
+          const movements = cards.filter(c => c.task_type === "lead_movement" && !promoted.has(c.id));
+          const liComments = cards.filter(c => c.task_type === "linkedin_engagement" && !promoted.has(c.id));
+          const gaVisitors = cards.filter(c => c.task_type === "engagement" && !promoted.has(c.id));
+          const topLeads = cards.filter(c => c.task_type === "top_x" && !promoted.has(c.id));
+          const accountedFor = new Set([
+            ...promoted,
+            ...movements.map(c => c.id),
+            ...liComments.map(c => c.id),
+            ...gaVisitors.map(c => c.id),
+            ...topLeads.map(c => c.id),
+          ]);
+          const other = cards.filter(c => !accountedFor.has(c.id));
+
+          const sections = [
+            { key: "top2call", icon: "📞", title: "Top 2 to call", sub: "Highest-score tasks with a phone number — call now", items: topCallable },
+            { key: "movements", icon: "📈", title: "Account movements", sub: "Hires, promotions, exits", items: movements },
+            { key: "comments", icon: "💬", title: "LinkedIn posts to comment", sub: "AI-suggested engagement on lead posts", items: liComments },
+            { key: "ga", icon: "🌐", title: "Website engagement", sub: "Leads visiting your site", items: gaVisitors },
+            { key: "top", icon: "🎯", title: "Top leads", sub: "Top X picks", items: topLeads },
+            { key: "other", icon: "·", title: "Other", sub: "", items: other },
+          ].filter(s => s.items.length > 0);
+
+          return sections.map(s => (
+            <Section key={s.key} icon={s.icon} title={s.title} sub={s.sub} count={s.items.length}>
+              {s.items.map((card) => (
+                <Card
+                  key={card.id}
+                  card={card}
+                  leaving={leaving.has(card.id)}
+                  enriching={enriching.has(card.id)}
+                  subject={getSubject(card)}
+                  meta={getMeta(card)}
+                  onAction={handleAction}
+                  onEnrichPhone={handleEnrichPhone}
+                />
+              ))}
+            </Section>
+          ));
+        })()}
 
         {/* Chat thread */}
         {historyLoaded && (
@@ -401,6 +499,72 @@ function ChatBubble({ msg }) {
     <div className={`chat-msg chat-msg-${msg.role}`}>
       {msg.role === "bot" && <div className="chat-avatar"><div className="dot" /></div>}
       <div className="chat-bubble">{msg.text}</div>
+    </div>
+  );
+}
+
+// Section wrapper with a header showing what category the cards below belong to.
+// Used to group the feed into Calls / Movements / Comments / etc.
+function Section({ icon, title, sub, count, children }) {
+  return (
+    <div className="feed-section">
+      <div className="section-hdr">
+        <span className="section-icon">{icon}</span>
+        <span className="section-title">{title}</span>
+        <span className="section-count">{count}</span>
+        {sub && <span className="section-sub">{sub}</span>}
+      </div>
+      <div className="feed">
+        {children}
+      </div>
+    </div>
+  );
+}
+
+// MessageCard — review item for a LinkedIn invite/DM that already went out
+// via Unipile. Shows the AI-drafted text + Approve / Flag.
+function MessageCard({ message, leaving, onAction }) {
+  const isDisabled = leaving;
+  const subtitle = [message.company, message.lead_title].filter(Boolean).join(" · ");
+  const typeLabel = {
+    connection_invite: "Connection invite",
+    invite: "Connection invite",
+    first_dm: "First DM",
+    followup: "Follow-up",
+    dm: "DM",
+  }[message.message_type] || message.message_type || "Message";
+  return (
+    <div className={`card review-card ${leaving ? "leaving" : "entering"}`}>
+      <div className="card-top">
+        <div>
+          <div className="subject">{message.lead_name || "(unknown lead)"}</div>
+          {subtitle && <div className="subject-meta">{subtitle}</div>}
+        </div>
+        <div className="msg-type-tag">{typeLabel}</div>
+      </div>
+      <div className="ai-message">{message.ai_message || "(no message content)"}</div>
+      <div className="tags">
+        {message.campaign && <div className="tag tag-rule">{message.campaign}</div>}
+      </div>
+      <div className="ctas">
+        {message.lead_linkedin && (
+          <a
+            className="btn"
+            href={message.lead_linkedin}
+            target="_blank"
+            rel="noopener noreferrer"
+            onClick={(e) => { if (isDisabled) e.preventDefault(); }}
+          >
+            in LinkedIn
+          </a>
+        )}
+        <button className="btn primary" disabled={isDisabled} onClick={() => onAction(message.id, "approve")}>
+          ✓ Approve
+        </button>
+        <button className="btn danger" disabled={isDisabled} onClick={() => onAction(message.id, "flag")}>
+          🚩 Flag
+        </button>
+      </div>
     </div>
   );
 }

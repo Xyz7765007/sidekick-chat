@@ -365,6 +365,71 @@ body { position: relative; }
 }
 .scan-check { font-size: 20px; color: var(--pos); flex-shrink: 0; }
 .scan-x { font-size: 18px; color: var(--danger); flex-shrink: 0; }
+
+/* ─── Feed sections ──────────────────────────────────────────── */
+.feed-section {
+  margin-bottom: 28px;
+}
+.section-hdr {
+  display: flex;
+  align-items: baseline;
+  gap: 10px;
+  padding: 6px 4px 12px;
+  margin-bottom: 8px;
+  border-bottom: 1px solid rgba(0,0,0,0.06);
+  flex-wrap: wrap;
+}
+.section-icon { font-size: 16px; flex-shrink: 0; }
+.section-title {
+  font-size: 12px;
+  font-weight: 700;
+  color: var(--t1);
+  letter-spacing: 0.6px;
+  text-transform: uppercase;
+}
+.section-count {
+  font-size: 11px;
+  font-weight: 600;
+  color: var(--t2);
+  background: rgba(0,0,0,0.05);
+  padding: 2px 8px;
+  border-radius: 10px;
+  font-family: 'JetBrains Mono', monospace;
+}
+.section-sub {
+  font-size: 11px;
+  color: var(--t2);
+  margin-left: auto;
+  text-align: right;
+  flex: 1;
+  min-width: 120px;
+}
+
+/* ─── Review cards (LinkedIn outreach approval) ─────────────── */
+.review-card { border-left: 3px solid var(--acc-deep); }
+.msg-type-tag {
+  font-size: 10px;
+  font-weight: 600;
+  text-transform: uppercase;
+  letter-spacing: 0.5px;
+  color: var(--acc-deep);
+  background: rgba(123, 159, 232, 0.1);
+  padding: 4px 10px;
+  border-radius: 6px;
+  white-space: nowrap;
+}
+.ai-message {
+  background: rgba(0,0,0,0.03);
+  border-radius: 8px;
+  padding: 12px 14px;
+  font-size: 13px;
+  line-height: 1.55;
+  color: var(--t1);
+  margin-bottom: 12px;
+  white-space: pre-wrap;
+  font-family: 'JetBrains Mono', monospace;
+}
+
 .chat-thread {
   margin-top: 28px;
   padding-top: 20px;
