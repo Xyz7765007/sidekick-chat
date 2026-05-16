@@ -576,9 +576,9 @@ body { position: relative; }
   display: flex; align-items: center; gap: 14px;
 }
 .hdr-action {
-  background: rgba(255, 255, 255, 0.06);
+  background: var(--surface);
   color: var(--t1);
-  border: 1px solid rgba(255, 255, 255, 0.1);
+  border: 1px solid var(--line);
   padding: 7px 12px;
   border-radius: 8px;
   font-size: 12px;
@@ -587,21 +587,26 @@ body { position: relative; }
   display: inline-flex;
   align-items: center;
   gap: 6px;
-  transition: background 0.15s, border-color 0.15s;
+  transition: background 0.15s, border-color 0.15s, color 0.15s;
+  box-shadow: var(--neu-shadow-tight);
 }
 .hdr-action:hover:not(:disabled) {
-  background: rgba(255, 255, 255, 0.1);
-  border-color: rgba(255, 255, 255, 0.2);
+  color: var(--acc-deep);
+  border-color: rgba(123, 159, 232, 0.3);
 }
 .hdr-action:disabled { opacity: 0.5; cursor: not-allowed; }
 
 /* ═══════════════════════════════════════════════════════════════════
    DAILY BATCH CARD — top-of-feed meta-card
+   Matches the .card surface palette but slightly warmer + thin accent
+   border at the left edge to mark it as the flagship action surface.
    ═══════════════════════════════════════════════════════════════════ */
 .batch-card {
-  background: linear-gradient(135deg, rgba(120, 180, 240, 0.08), rgba(150, 130, 220, 0.06));
-  border: 1.5px solid rgba(120, 180, 240, 0.25);
+  background: var(--bg-warm);
+  border: 1px solid var(--line);
+  border-left: 3px solid var(--acc);
   border-radius: 14px;
+  box-shadow: var(--neu-shadow);
   padding: 20px 22px;
   margin-bottom: 24px;
   position: relative;
@@ -615,15 +620,16 @@ body { position: relative; }
   display: flex; gap: 12px; align-items: flex-start;
 }
 .batch-icon {
-  font-size: 24px;
+  font-size: 22px;
   line-height: 1;
   margin-top: 2px;
 }
 .batch-title {
-  font-size: 16px;
+  font-size: 15px;
   font-weight: 600;
   color: var(--t1);
   margin-bottom: 4px;
+  letter-spacing: -0.01em;
 }
 .batch-sub {
   font-size: 12.5px;
@@ -640,15 +646,15 @@ body { position: relative; }
   margin-top: 18px;
   display: flex; flex-direction: column; gap: 14px;
   padding-top: 18px;
-  border-top: 1px solid rgba(255, 255, 255, 0.08);
+  border-top: 1px solid var(--line);
 }
 
 /* ─── Batch lead card (one per lead in expanded view) ─── */
 .batch-lead {
-  background: rgba(0, 0, 0, 0.18);
-  border: 1px solid rgba(255, 255, 255, 0.07);
+  background: var(--surface);
+  border: 1px solid var(--line);
   border-radius: 10px;
-  padding: 14px 16px;
+  padding: 16px 18px;
 }
 .batch-lead-hdr {
   display: flex; justify-content: space-between; align-items: center;
@@ -662,13 +668,14 @@ body { position: relative; }
 }
 .batch-lead-index {
   display: inline-block;
-  background: rgba(255, 255, 255, 0.08);
+  background: var(--bg-warm);
   color: var(--t2);
   padding: 2px 7px;
   border-radius: 4px;
   font-size: 11px;
   font-weight: 500;
   margin-right: 8px;
+  font-family: 'JetBrains Mono', ui-monospace, monospace;
 }
 .batch-lead-title { color: var(--t2); font-weight: 400; font-size: 13px; }
 .batch-lead-company { color: var(--t2); font-weight: 400; font-size: 13px; }
@@ -677,16 +684,17 @@ body { position: relative; }
   flex-shrink: 0;
 }
 .batch-score-val {
-  background: rgba(255, 255, 255, 0.06);
+  background: var(--bg-warm);
+  color: var(--acc-deep);
   padding: 3px 8px;
   border-radius: 4px;
   font-size: 11px;
-  color: var(--t1);
-  font-weight: 500;
+  font-weight: 600;
+  letter-spacing: 0.01em;
 }
 .badge-movement {
-  background: rgba(255, 120, 60, 0.15);
-  color: #ff9866;
+  background: rgba(201, 154, 79, 0.14);
+  color: var(--warn);
   padding: 3px 8px;
   border-radius: 4px;
   font-size: 11px;
@@ -708,10 +716,11 @@ body { position: relative; }
   font-size: 12px;
 }
 .batch-lead-link a {
-  color: rgba(120, 180, 240, 0.7);
+  color: var(--acc-deep);
   text-decoration: none;
+  opacity: 0.85;
 }
-.batch-lead-link a:hover { color: rgba(120, 180, 240, 1); }
+.batch-lead-link a:hover { opacity: 1; }
 
 /* ─── Pre-generated messages inside batch lead ─── */
 .batch-msgs {
@@ -719,29 +728,30 @@ body { position: relative; }
   display: flex; flex-direction: column; gap: 10px;
 }
 .batch-msg {
-  background: rgba(255, 255, 255, 0.025);
-  border-left: 2px solid rgba(120, 180, 240, 0.4);
-  padding: 8px 12px;
-  border-radius: 0 6px 6px 0;
+  background: var(--bg-warm);
+  border-left: 2px solid var(--acc);
+  padding: 10px 14px;
+  border-radius: 0 8px 8px 0;
 }
 .batch-msg-hdr {
   display: flex; justify-content: space-between; align-items: center;
   margin-bottom: 5px;
 }
 .batch-msg-label {
-  font-size: 11px;
+  font-size: 10.5px;
   font-weight: 600;
   color: var(--t1);
   text-transform: uppercase;
-  letter-spacing: 0.4px;
+  letter-spacing: 0.06em;
+  font-family: 'JetBrains Mono', ui-monospace, monospace;
 }
 .batch-msg-meta {
   font-size: 10.5px;
-  color: var(--t2);
+  color: var(--t3);
 }
-.char-ok { color: rgba(120, 200, 140, 0.85); font-weight: 500; }
-.char-over { color: rgba(255, 100, 100, 0.95); font-weight: 600; }
-.batch-msg-sent { color: var(--t3, var(--t2)); }
+.char-ok { color: var(--pos); font-weight: 500; }
+.char-over { color: var(--danger); font-weight: 600; }
+.batch-msg-sent { color: var(--t3); }
 .batch-msg-text {
   font-size: 13px;
   color: var(--t1);
@@ -751,19 +761,21 @@ body { position: relative; }
   white-space: pre-wrap;
   word-wrap: break-word;
   transition: background 0.15s;
-}
-.batch-msg-text:hover {
-  background: rgba(255, 255, 255, 0.025);
   border-radius: 4px;
 }
+.batch-msg-text:hover {
+  background: rgba(43, 40, 37, 0.04);
+  padding: 4px 6px;
+  margin: 0 -6px;
+}
 .batch-msg-empty {
-  color: var(--t2);
+  color: var(--t3);
   font-style: italic;
 }
 .batch-msg-edit {
   width: 100%;
-  background: rgba(0, 0, 0, 0.3);
-  border: 1px solid rgba(120, 180, 240, 0.5);
+  background: #FFFFFF;
+  border: 1px solid var(--acc);
   color: var(--t1);
   font-size: 13px;
   line-height: 1.55;
@@ -773,13 +785,13 @@ body { position: relative; }
   resize: vertical;
   margin-top: 3px;
 }
-.batch-msg-edit:focus { outline: none; border-color: rgba(120, 180, 240, 0.9); }
+.batch-msg-edit:focus { outline: none; border-color: var(--acc-deep); box-shadow: 0 0 0 3px rgba(123, 159, 232, 0.12); }
 
 .batch-lead-ctas {
   display: flex; gap: 8px;
   margin-top: 12px;
   padding-top: 12px;
-  border-top: 1px solid rgba(255, 255, 255, 0.05);
+  border-top: 1px solid var(--line);
 }
 .batch-lead-ctas .btn { font-size: 12px; padding: 6px 12px; }
 
@@ -788,9 +800,9 @@ body { position: relative; }
    ═══════════════════════════════════════════════════════════════════ */
 .callable-reasons {
   margin: 10px 0 12px;
-  padding: 8px 12px;
-  background: rgba(255, 200, 100, 0.04);
-  border-left: 2px solid rgba(255, 200, 100, 0.4);
+  padding: 10px 12px;
+  background: var(--bg-warm);
+  border-left: 2px solid var(--warn);
   border-radius: 0 6px 6px 0;
 }
 .callable-reason {
@@ -812,7 +824,7 @@ body { position: relative; }
   .batch-ctas .btn { width: 100%; justify-content: center; }
 }
 
-/* Profile + post link chips */
+/* Profile + post link chips — match neutral palette */
 .batch-lead-links {
   display: flex; gap: 8px; flex-wrap: wrap;
   margin: 4px 0 14px;
@@ -821,20 +833,21 @@ body { position: relative; }
   display: inline-flex;
   align-items: center;
   gap: 4px;
-  background: rgba(120, 180, 240, 0.08);
-  border: 1px solid rgba(120, 180, 240, 0.18);
-  color: rgba(120, 180, 240, 0.95);
-  padding: 3px 9px;
+  background: var(--bg-warm);
+  border: 1px solid var(--line);
+  color: var(--acc-deep);
+  padding: 3px 10px;
   border-radius: 5px;
   font-size: 11.5px;
   text-decoration: none;
   font-weight: 500;
   transition: background 0.15s, border-color 0.15s;
+  font-family: 'JetBrains Mono', ui-monospace, monospace;
+  letter-spacing: 0.01em;
 }
 .batch-link-chip:hover {
-  background: rgba(120, 180, 240, 0.16);
-  border-color: rgba(120, 180, 240, 0.4);
+  background: var(--surface);
+  border-color: rgba(123, 159, 232, 0.4);
 }
 
-/* Override old single-link style — keep for legacy renders */
 .batch-lead-link { display: none; }
