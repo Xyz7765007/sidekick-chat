@@ -456,32 +456,65 @@ export default function SideKick() {
         )}
 
         {/* ─── DAILY LINKEDIN BATCH ─────────────────────────────
-            The flagship feature: 5 highest-scored leads with
-            AI-personalized connection notes + 3-DM sequences,
-            pre-generated and awaiting one-tap approval.
-            Renders only when a pending batch exists. */}
-        {autoBatches.map(batch => (
-          <DailyBatchCard
-            key={batch.batch_id}
-            batch={batch}
-            expanded={batchExpanded.has(batch.batch_id)}
-            onToggleExpand={() => {
-              setBatchExpanded(prev => {
-                const next = new Set(prev);
-                if (next.has(batch.batch_id)) next.delete(batch.batch_id);
-                else next.add(batch.batch_id);
-                return next;
-              });
-            }}
-            onSendAll={() => handleBatchAction("send_all", { batchId: batch.batch_id })}
-            onSkipAll={() => handleBatchAction("skip_all", { batchId: batch.batch_id })}
-            onSendOne={(recordId) => handleBatchAction("send_one", { recordId })}
-            onSkipOne={(recordId) => handleBatchAction("skip_one", { recordId })}
-            onEditField={(recordId, field, newText) => handleBatchAction("edit", { recordId, field, newText })}
-            editingDraft={editingDraft}
-            setEditingDraft={setEditingDraft}
-          />
-        ))}
+            Merges all pending_approval records into ONE batch card
+            regardless of Batch ID. Reasoning: Batch ID is internal
+            accounting (today's vs yesterday's, etc.) — the operator just
+            wants to see "here's everything pending approval, act on it."
+            If cleanup ever partially fails server-side (Airtable rate
+            limit, etc.) we still render one unified card instead of
+            confusing the user with two cards for the same daily batch.
+
+            Dedup also runs here: same lead_name + company → render once.
+            Server-side dedup catches most cases; this is defense-in-depth.
+        */}
+        {(() => {
+          if (!autoBatches.length) return null;
+          // Collect all leads across all batch groups
+          const allLeads = autoBatches.flatMap(b => b.leads || []);
+          // Dedup by record id first (just in case), then by name+company
+          const seenIds = new Set();
+          const seenNameCo = new Set();
+          const dedupedLeads = [];
+          for (const lead of allLeads) {
+            if (seenIds.has(lead.id)) continue;
+            const key = `${(lead.lead_name || "").toLowerCase().trim()}|${(lead.company || "").toLowerCase().trim()}`;
+            if (key !== "|" && seenNameCo.has(key)) continue;
+            seenIds.add(lead.id);
+            if (key !== "|") seenNameCo.add(key);
+            dedupedLeads.push(lead);
+          }
+          // Sort by composite score desc so highest priority leads surface first
+          dedupedLeads.sort((a, b) => (b.composite_score || 0) - (a.composite_score || 0));
+          // Build a single virtual batch with batch_id="all" — server interprets
+          // "all" as a Status-only filter on send_all/skip_all
+          const mergedBatch = {
+            batch_id: "all",
+            leads: dedupedLeads,
+            count: dedupedLeads.length,
+          };
+          return (
+            <DailyBatchCard
+              key="merged-pending-batch"
+              batch={mergedBatch}
+              expanded={batchExpanded.has("all")}
+              onToggleExpand={() => {
+                setBatchExpanded(prev => {
+                  const next = new Set(prev);
+                  if (next.has("all")) next.delete("all");
+                  else next.add("all");
+                  return next;
+                });
+              }}
+              onSendAll={() => handleBatchAction("send_all", { batchId: "all" })}
+              onSkipAll={() => handleBatchAction("skip_all", { batchId: "all" })}
+              onSendOne={(recordId) => handleBatchAction("send_one", { recordId })}
+              onSkipOne={(recordId) => handleBatchAction("skip_one", { recordId })}
+              onEditField={(recordId, field, newText) => handleBatchAction("edit", { recordId, field, newText })}
+              editingDraft={editingDraft}
+              setEditingDraft={setEditingDraft}
+            />
+          );
+        })()}
 
         {/* ─── TOP LEADS TO CALL (server-curated) ───────────────
             Composite-scored top N leads with full "why now" reasons.
