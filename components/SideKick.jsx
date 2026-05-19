@@ -57,6 +57,41 @@ function formatSignalText(raw) {
   return out;
 }
 
+// ─────────────────────────────────────────────────────────────────────
+// ExpandableSignal — collapses long structured text after N lines with
+// a "Show N more lines" / "Show less" toggle. Used so multi-post signal
+// blocks (e.g. Rahul's 2 LinkedIn posts × 8 sections each = 16+ lines)
+// don't overwhelm the card. Threshold is line-based on the already-
+// formatted text (formatSignalText must run BEFORE this).
+// ─────────────────────────────────────────────────────────────────────
+function ExpandableSignal({ text, threshold = 8 }) {
+  const [expanded, setExpanded] = useState(false);
+  if (!text || typeof text !== "string") return text || null;
+  const lines = text.split("\n");
+  if (lines.length <= threshold) return text;
+  if (expanded) {
+    return (
+      <>
+        {text}
+        {"\n"}
+        <button className="signal-toggle" onClick={(e) => { e.stopPropagation(); setExpanded(false); }}>
+          Show less
+        </button>
+      </>
+    );
+  }
+  const hiddenCount = lines.length - threshold;
+  return (
+    <>
+      {lines.slice(0, threshold).join("\n")}
+      {"\n"}
+      <button className="signal-toggle" onClick={(e) => { e.stopPropagation(); setExpanded(true); }}>
+        Show {hiddenCount} more {hiddenCount === 1 ? "line" : "lines"}
+      </button>
+    </>
+  );
+}
+
 export default function SideKick() {
   const [cards, setCards] = useState([]);
   const [count, setCount] = useState(0);
@@ -64,6 +99,12 @@ export default function SideKick() {
   const [fetchError, setFetchError] = useState(null);
   const [leaving, setLeaving] = useState(new Set());
   const [toast, setToast] = useState("");
+
+  // Sticky top card — see render block. Locks the visible card until it's
+  // gone from the feed (user actioned it OR server removed it). Stored in
+  // a ref since it's only read in render and updated alongside it; no
+  // re-render needed on change.
+  const stickyTopIdRef = useRef(null);
 
   // Chat state — initialized empty, populated from Airtable on mount
   const [messages, setMessages] = useState([]);
@@ -578,27 +619,45 @@ export default function SideKick() {
           // ─── STACK MODE: one task at a time, rest queued behind ─────
           // Client feedback: too much text overwhelms. Show only the
           // single highest-priority card; everything else summarized as a
-          // queue indicator below. Acting on the top card removes it →
-          // next slides up.
+          // queue indicator below.
           //
-          // Priority order: movements first (time-sensitive hires/exits),
-          // then top X (curated ICP matches), then LinkedIn engagement,
-          // then GA visits, then any other tasks. Within each group:
-          // composite score desc.
-          const movements = cards.filter(c => c.task_type === "lead_movement");
-          const liComments = cards.filter(c => c.task_type === "linkedin_engagement");
-          const gaVisitors = cards.filter(c => c.task_type === "engagement");
-          const topLeads = cards.filter(c => c.task_type === "top_x");
+          // BEHAVIOR (per client feedback May 20):
+          //   - The visible card is STICKY. It only changes when the user
+          //     acts on it (Mark Done / Skip) or when the server removes
+          //     it. The 30s polling still refreshes the underlying card
+          //     list, but the top card stays put — no jarring mid-scroll
+          //     swap when fresh data arrives.
+          //   - Leads already shown in the "Top leads to call" section are
+          //     filtered OUT of the stack to avoid duplicates (Siddhartha
+          //     was appearing in both places with different scores).
+          //
+          // Priority order within stack: movements first (time-sensitive),
+          // then top X (curated ICP), then LinkedIn engagement, then GA
+          // visits, then other. Within each group: composite score desc.
+
+          // Dedup: build a set of leads already surfaced by TopCallableCard.
+          // Match by name + company since IDs may differ across the two
+          // feeds (top-leads-to-call is server-curated separately).
+          const topCallableKey = lead => `${(lead.lead_name || "").toLowerCase().trim()}|${(lead.company || "").toLowerCase().trim()}`;
+          const topCallableNames = new Set(topCallable.map(topCallableKey).filter(k => k !== "|"));
+          const dedupedCards = cards.filter(c => !topCallableNames.has(topCallableKey(c)));
+
+          if (dedupedCards.length === 0) return null;
+
+          const movements = dedupedCards.filter(c => c.task_type === "lead_movement");
+          const liComments = dedupedCards.filter(c => c.task_type === "linkedin_engagement");
+          const gaVisitors = dedupedCards.filter(c => c.task_type === "engagement");
+          const topLeads = dedupedCards.filter(c => c.task_type === "top_x");
           const accountedFor = new Set([
             ...movements.map(c => c.id),
             ...liComments.map(c => c.id),
             ...gaVisitors.map(c => c.id),
             ...topLeads.map(c => c.id),
           ]);
-          const other = cards.filter(c => !accountedFor.has(c.id));
+          const other = dedupedCards.filter(c => !accountedFor.has(c.id));
 
           const byScore = (a, b) => (b.score || 0) - (a.score || 0);
-          const stack = [
+          const sortedStack = [
             ...movements.sort(byScore),
             ...topLeads.sort(byScore),
             ...liComments.sort(byScore),
@@ -606,9 +665,20 @@ export default function SideKick() {
             ...other.sort(byScore),
           ];
 
-          if (stack.length === 0) return null;
-          const topCard = stack[0];
-          const remaining = stack.slice(1);
+          if (sortedStack.length === 0) return null;
+
+          // Sticky top — keep showing the same card until it's gone from the
+          // feed. Stored in a ref so it survives polls without triggering
+          // re-renders. Ref update during render is fine (no setState).
+          let topCard;
+          const stickyStillValid = stickyTopIdRef.current && sortedStack.find(c => c.id === stickyTopIdRef.current);
+          if (stickyStillValid) {
+            topCard = sortedStack.find(c => c.id === stickyTopIdRef.current);
+          } else {
+            topCard = sortedStack[0];
+            stickyTopIdRef.current = topCard.id;
+          }
+          const remaining = sortedStack.filter(c => c.id !== topCard.id);
 
           // Breakdown by type — excludes topCard (it's the visible one)
           const breakdown = {
@@ -869,8 +939,14 @@ function Card({ card, leaving, enriching, subject, meta, onAction, onEnrichPhone
       {/* Movement badge — only for movement cards, sits below identity */}
       {movementBadge && <div className="card-movement-badge">{movementBadge}</div>}
 
-      {/* Signal — structured by inserting line breaks before emoji markers */}
-      {card.signal && <div className="card-signal-text">{formatSignalText(card.signal)}</div>}
+      {/* Signal — structured by inserting line breaks before emoji markers,
+          then collapsed at 8 lines with a Show more toggle for long blocks
+          (e.g. multi-post LinkedIn engagement reasons). */}
+      {card.signal && (
+        <div className="card-signal-text">
+          <ExpandableSignal text={formatSignalText(card.signal)} threshold={8} />
+        </div>
+      )}
 
       {/* Source / rule — small chips below signal */}
       {(card.task_rule || card.source) && (
@@ -1220,7 +1296,17 @@ function TopCallableCard({ lead, enriching, onEnrichPhone }) {
 
       {reasons.length > 0 && (
         <div className="callable-reasons">
-          {reasons.map((r, i) => <div key={i} className="callable-reason">→ {formatSignalText(r)}</div>)}
+          {/* Join all reasons into one structured block. Each reason is
+              prefixed with `→` and they're separated by a blank line. The
+              whole block is collapsed at 8 lines so multi-post reasons
+              (e.g. Rahul's 2 posts × ~8 sections each) don't dominate.
+              `ExpandableSignal` adds the Show more / Show less toggle. */}
+          <div className="callable-reason">
+            <ExpandableSignal
+              text={reasons.map(r => `→ ${formatSignalText(r)}`).join("\n\n")}
+              threshold={8}
+            />
+          </div>
         </div>
       )}
 
