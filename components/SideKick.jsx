@@ -21,6 +21,42 @@ const POLL_INTERVAL_MS = 30000;
 const FEED_LIMIT = 20;
 const HISTORY_LIMIT = 30;
 
+// ─────────────────────────────────────────────────────────────────────
+// Signal text formatter
+// Server delivers the signal as one big paragraph with emoji markers
+// inline (→, 📝, 💬, 🔍, 💡, 📊, 📋, •). Operators were getting walls of
+// text. Insert a newline before each marker (except the very first) so
+// the structure is visible. CSS `white-space: pre-wrap` on the rendering
+// container then renders the newlines as real line breaks.
+//
+// Also strips trailing whitespace and stray separator chars (em dash etc.)
+// that get left dangling before a newline.
+// ─────────────────────────────────────────────────────────────────────
+function formatSignalText(raw) {
+  if (!raw || typeof raw !== "string") return raw;
+  // Markers that each start a new line. Notes on the alternation:
+  //   - `🔗` is a marker on its own — TopCallableCard prepends `→ ` in JSX
+  //     so the reason text starts with bare `🔗`. Card stack mode's signal
+  //     can have `→ 🔗` together; lookahead on `→` prevents splitting them.
+  //   - `→(?!\s*🔗)` matches `→` only when NOT followed by `🔗`, so the
+  //     header arrow on movement cards ("→ ICP fit (80/100)") still acts
+  //     as a section break for any subsequent → blocks in the same text.
+  const markerPattern = /(🔗|📝|💬|🔍|💡|📊|📋|•|→(?!\s*🔗))/g;
+  let firstSeen = false;
+  let out = raw.replace(markerPattern, (match) => {
+    if (!firstSeen) {
+      firstSeen = true;
+      return match;
+    }
+    return `\n${match}`;
+  });
+  // Strip trailing whitespace + stray separator chars (em dash, en dash,
+  // hyphen) immediately before a newline — these get orphaned when we
+  // break "X — 📊 Y" into "X —\n📊 Y".
+  out = out.replace(/[\s—–-]+\n/g, "\n");
+  return out;
+}
+
 export default function SideKick() {
   const [cards, setCards] = useState([]);
   const [count, setCount] = useState(0);
@@ -833,8 +869,8 @@ function Card({ card, leaving, enriching, subject, meta, onAction, onEnrichPhone
       {/* Movement badge — only for movement cards, sits below identity */}
       {movementBadge && <div className="card-movement-badge">{movementBadge}</div>}
 
-      {/* Signal — clamped to 3 lines via CSS line-clamp */}
-      {card.signal && <div className="card-signal-text">{card.signal}</div>}
+      {/* Signal — structured by inserting line breaks before emoji markers */}
+      {card.signal && <div className="card-signal-text">{formatSignalText(card.signal)}</div>}
 
       {/* Source / rule — small chips below signal */}
       {(card.task_rule || card.source) && (
@@ -1184,7 +1220,7 @@ function TopCallableCard({ lead, enriching, onEnrichPhone }) {
 
       {reasons.length > 0 && (
         <div className="callable-reasons">
-          {reasons.map((r, i) => <div key={i} className="callable-reason">→ {r}</div>)}
+          {reasons.map((r, i) => <div key={i} className="callable-reason">→ {formatSignalText(r)}</div>)}
         </div>
       )}
 

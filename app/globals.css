@@ -810,6 +810,8 @@ body { position: relative; }
   color: var(--t1);
   margin-bottom: 3px;
   line-height: 1.5;
+  white-space: pre-wrap;
+  word-break: break-word;
 }
 .callable-reason:last-child { margin-bottom: 0; }
 
@@ -929,18 +931,22 @@ body { position: relative; }
   color: var(--acc-deep);
 }
 
-/* Signal text — clamped to 3 lines via line-clamp, smaller + secondary */
+/* Signal text — now structured (newlines inserted client-side before each
+   emoji marker via formatSignalText). Drop the aggressive 3-line clamp;
+   stack mode shows ONE card at a time so the card can grow taller. Soft
+   ceiling at 10 lines so a really chatty signal still doesn't dominate.
+   Operator can scroll the page if more is needed. */
 .card-signal-text {
   margin-top: 12px;
   font-size: 13px;
   color: var(--t2);
   line-height: 1.55;
-  display: -webkit-box;
-  -webkit-line-clamp: 3;
-  -webkit-box-orient: vertical;
-  overflow: hidden;
   white-space: pre-wrap;
   word-break: break-word;
+  display: -webkit-box;
+  -webkit-line-clamp: 10;
+  -webkit-box-orient: vertical;
+  overflow: hidden;
 }
 
 /* Source chips below signal */
