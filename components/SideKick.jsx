@@ -539,10 +539,16 @@ export default function SideKick() {
         )}
 
         {!loading && !fetchError && cards.length > 0 && (() => {
-          // ─── Task sections (movements, comments, GA, top X, other) ─
-          // No more local "Top 2 to call" — that's now server-curated
-          // via topCallable above. We also no longer dedupe by phone
-          // since phone is no longer a filter.
+          // ─── STACK MODE: one task at a time, rest queued behind ─────
+          // Client feedback: too much text overwhelms. Show only the
+          // single highest-priority card; everything else summarized as a
+          // queue indicator below. Acting on the top card removes it →
+          // next slides up.
+          //
+          // Priority order: movements first (time-sensitive hires/exits),
+          // then top X (curated ICP matches), then LinkedIn engagement,
+          // then GA visits, then any other tasks. Within each group:
+          // composite score desc.
           const movements = cards.filter(c => c.task_type === "lead_movement");
           const liComments = cards.filter(c => c.task_type === "linkedin_engagement");
           const gaVisitors = cards.filter(c => c.task_type === "engagement");
@@ -555,30 +561,43 @@ export default function SideKick() {
           ]);
           const other = cards.filter(c => !accountedFor.has(c.id));
 
-          const sections = [
-            { key: "movements", icon: "📈", title: "Account movements", sub: "Hires, promotions, exits", items: movements },
-            { key: "comments", icon: "💬", title: "LinkedIn posts to comment", sub: "AI-suggested engagement on lead posts", items: liComments },
-            { key: "ga", icon: "🌐", title: "Website engagement", sub: "Leads visiting your site", items: gaVisitors },
-            { key: "top", icon: "🎯", title: "Top leads", sub: "Top X picks", items: topLeads },
-            { key: "other", icon: "·", title: "Other", sub: "", items: other },
-          ].filter(s => s.items.length > 0);
+          const byScore = (a, b) => (b.score || 0) - (a.score || 0);
+          const stack = [
+            ...movements.sort(byScore),
+            ...topLeads.sort(byScore),
+            ...liComments.sort(byScore),
+            ...gaVisitors.sort(byScore),
+            ...other.sort(byScore),
+          ];
 
-          return sections.map(s => (
-            <Section key={s.key} icon={s.icon} title={s.title} sub={s.sub} count={s.items.length}>
-              {s.items.map((card) => (
-                <Card
-                  key={card.id}
-                  card={card}
-                  leaving={leaving.has(card.id)}
-                  enriching={enriching.has(card.id)}
-                  subject={getSubject(card)}
-                  meta={getMeta(card)}
-                  onAction={handleAction}
-                  onEnrichPhone={handleEnrichPhone}
-                />
-              ))}
-            </Section>
-          ));
+          if (stack.length === 0) return null;
+          const topCard = stack[0];
+          const remaining = stack.slice(1);
+
+          // Breakdown by type — excludes topCard (it's the visible one)
+          const breakdown = {
+            movements: remaining.filter(c => c.task_type === "lead_movement").length,
+            top:       remaining.filter(c => c.task_type === "top_x").length,
+            comments:  remaining.filter(c => c.task_type === "linkedin_engagement").length,
+            ga:        remaining.filter(c => c.task_type === "engagement").length,
+            other:     remaining.filter(c => !["lead_movement", "top_x", "linkedin_engagement", "engagement"].includes(c.task_type)).length,
+          };
+
+          return (
+            <div className="task-stack">
+              <Card
+                key={topCard.id}
+                card={topCard}
+                leaving={leaving.has(topCard.id)}
+                enriching={enriching.has(topCard.id)}
+                subject={getSubject(topCard)}
+                meta={getMeta(topCard)}
+                onAction={handleAction}
+                onEnrichPhone={handleEnrichPhone}
+              />
+              {remaining.length > 0 && <QueueIndicator count={remaining.length} breakdown={breakdown} />}
+            </div>
+          );
         })()}
 
         {/* Chat thread */}
@@ -776,87 +795,151 @@ function Card({ card, leaving, enriching, subject, meta, onAction, onEnrichPhone
     card.lead_name || card.lead_linkedin || card.lead_email
   );
 
-  // Movement badge — colored chip for Hired / Promoted / Exited
-  const movementBadge = card.movement_type ? {
-    Hired: { label: "🎉 NEW HIRE", className: "badge-hired" },
-    Promoted: { label: "📈 PROMOTED", className: "badge-promoted" },
-    Exited: { label: "👋 EXITED", className: "badge-exited" },
-  }[card.movement_type] : null;
+  // Type chip — small visual category indicator at the top.
+  // Replaces the old section header (since stack mode merges all sections).
+  const typeChip = ({
+    lead_movement:       { icon: "📈", label: "Movement",    tone: "movement" },
+    linkedin_engagement: { icon: "💬", label: "LinkedIn",    tone: "li" },
+    engagement:          { icon: "🌐", label: "Site visit",  tone: "ga" },
+    top_x:               { icon: "🎯", label: "Top lead",    tone: "top" },
+  })[card.task_type] || { icon: "·", label: "Task", tone: "default" };
+
+  // Movement-specific badge (Hired/Promoted/Exited) — distinct from typeChip
+  const movementBadge = card.movement_type ? ({
+    Hired:    "🎉 New hire",
+    Promoted: "📈 Promoted",
+    Exited:   "👋 Exited",
+  })[card.movement_type] : null;
 
   return (
-    <div className={`card ${leaving ? "leaving" : "entering"}`}>
-      <div className="card-top">
-        <div>
-          <div className="subject">{subject}</div>
-          {meta && <div className="subject-meta">{meta}</div>}
-          {movementBadge && (
-            <div className={`movement-badge ${movementBadge.className}`}>{movementBadge.label}</div>
+    <div className={`card card-stack ${leaving ? "leaving" : "entering"}`}>
+      {/* Type chip + score on top — small, low-noise */}
+      <div className="card-header">
+        <span className={`card-type card-type-${typeChip.tone}`}>
+          <span className="card-type-icon">{typeChip.icon}</span>
+          {typeChip.label}
+        </span>
+        {typeof card.score === "number" && card.score > 0 && (
+          <span className="card-score-chip" title={`Composite score ${card.score}`}>
+            {card.score}
+          </span>
+        )}
+      </div>
+
+      {/* Lead identity — name large, meta small */}
+      <div className="card-name">{subject}</div>
+      {meta && <div className="card-meta">{meta}</div>}
+
+      {/* Movement badge — only for movement cards, sits below identity */}
+      {movementBadge && <div className="card-movement-badge">{movementBadge}</div>}
+
+      {/* Signal — clamped to 3 lines via CSS line-clamp */}
+      {card.signal && <div className="card-signal-text">{card.signal}</div>}
+
+      {/* Source / rule — small chips below signal */}
+      {(card.task_rule || card.source) && (
+        <div className="card-source-row">
+          {card.task_rule && <span className="card-source-chip">{card.task_rule}</span>}
+          {card.source && <span className="card-source-chip">{card.source}</span>}
+        </div>
+      )}
+
+      {/* Actions: primary (Done/Skip) left, secondary icon buttons right */}
+      <div className="card-actions-row">
+        <div className="card-actions-primary">
+          <button
+            className="btn primary"
+            disabled={isDisabled}
+            onClick={() => onAction(card.id, "done")}
+          >
+            ✓ Mark Done
+          </button>
+          <button
+            className="btn danger"
+            disabled={isDisabled}
+            onClick={() => onAction(card.id, "skip")}
+          >
+            Skip
+          </button>
+        </div>
+        <div className="card-actions-secondary">
+          {hasLink && (
+            <a
+              className="card-icon-btn"
+              href={card.url}
+              target="_blank"
+              rel="noopener noreferrer"
+              onClick={(e) => { if (isDisabled) e.preventDefault(); }}
+              title="Open link"
+            >↗</a>
+          )}
+          {hasLinkedIn && (
+            <a
+              className="card-icon-btn"
+              href={card.lead_linkedin}
+              target="_blank"
+              rel="noopener noreferrer"
+              onClick={(e) => { if (isDisabled) e.preventDefault(); }}
+              title="LinkedIn profile"
+            >in</a>
+          )}
+          {hasPhone && (
+            <a
+              className="card-icon-btn"
+              href={`tel:${card.lead_phone}`}
+              onClick={(e) => { if (isDisabled) e.preventDefault(); }}
+              title={`Call ${card.lead_phone}${card.lead_phone_type === "mobile" ? " (mobile)" : card.lead_phone_type === "company_main" ? " (company)" : ""}`}
+            >☎</a>
+          )}
+          {canEnrich && (
+            <button
+              className="card-icon-btn"
+              disabled={enriching}
+              onClick={() => onEnrichPhone(card.id)}
+              title="Enrich phone via Apollo"
+            >
+              {enriching ? <span className="spinner spinner-sm" /> : "☎+"}
+            </button>
           )}
         </div>
-        {typeof card.score === "number" && card.score > 0 && (
-          <div className="score">
-            <span className="score-label">SCORE</span>
-            {card.score}
+      </div>
+    </div>
+  );
+}
+
+// ═══════════════════════════════════════════════════════════════════
+// QUEUE INDICATOR
+// Shown below the visible top card. Tells operator how many tasks are
+// queued behind + breakdown by type so they know what's coming next
+// without seeing all the detail.
+// ═══════════════════════════════════════════════════════════════════
+function QueueIndicator({ count, breakdown }) {
+  const chips = [
+    breakdown.movements > 0 && { icon: "📈", label: `${breakdown.movements} movement${breakdown.movements > 1 ? "s" : ""}` },
+    breakdown.top       > 0 && { icon: "🎯", label: `${breakdown.top} top lead${breakdown.top > 1 ? "s" : ""}` },
+    breakdown.comments  > 0 && { icon: "💬", label: `${breakdown.comments} LinkedIn` },
+    breakdown.ga        > 0 && { icon: "🌐", label: `${breakdown.ga} site visit${breakdown.ga > 1 ? "s" : ""}` },
+    breakdown.other     > 0 && { icon: "·",  label: `${breakdown.other} other` },
+  ].filter(Boolean);
+
+  return (
+    <div className="queue-indicator">
+      <div className="queue-stack-visual" aria-hidden="true">
+        <div className="queue-card-ghost queue-card-ghost-1" />
+        <div className="queue-card-ghost queue-card-ghost-2" />
+      </div>
+      <div className="queue-text">
+        <div className="queue-count">{count} more queued</div>
+        {chips.length > 0 && (
+          <div className="queue-breakdown">
+            {chips.map((c, i) => (
+              <span key={i} className="queue-chip">
+                <span className="queue-chip-icon">{c.icon}</span>
+                {c.label}
+              </span>
+            ))}
           </div>
         )}
-      </div>
-
-      {card.signal && <div className="signal">{card.signal}</div>}
-
-      <div className="tags">
-        {card.task_rule && <div className="tag tag-rule">{card.task_rule}</div>}
-        {card.source && <div className="tag">{card.source}</div>}
-      </div>
-
-      <div className="ctas">
-        {hasLink && (
-          <a
-            className="btn"
-            href={card.url}
-            target="_blank"
-            rel="noopener noreferrer"
-            onClick={(e) => { if (isDisabled) e.preventDefault(); }}
-          >
-            ↗ Open Link
-          </a>
-        )}
-        {hasLinkedIn && (
-          <a
-            className="btn"
-            href={card.lead_linkedin}
-            target="_blank"
-            rel="noopener noreferrer"
-            onClick={(e) => { if (isDisabled) e.preventDefault(); }}
-          >
-            in LinkedIn
-          </a>
-        )}
-        {hasPhone && (
-          <a
-            className="btn"
-            href={`tel:${card.lead_phone}`}
-            onClick={(e) => { if (isDisabled) e.preventDefault(); }}
-            title={card.lead_phone_description ? `${card.lead_phone} · ${card.lead_phone_description}` : card.lead_phone}
-          >
-            ☎ Call{card.lead_phone_type === "mobile" ? " (mobile)" : card.lead_phone_type === "company_main" ? " (company)" : ""}
-          </a>
-        )}
-        {canEnrich && (
-          <button
-            className="btn"
-            disabled={enriching}
-            onClick={() => onEnrichPhone(card.id)}
-            title="Use Apollo to find this lead's phone number"
-          >
-            {enriching ? <><span className="spinner spinner-sm" /> Enriching…</> : "☎ Enrich Phone"}
-          </button>
-        )}
-        <button className="btn primary" disabled={isDisabled} onClick={() => onAction(card.id, "done")}>
-          ✓ Mark Done
-        </button>
-        <button className="btn danger" disabled={isDisabled} onClick={() => onAction(card.id, "skip")}>
-          Skip
-        </button>
       </div>
     </div>
   );
