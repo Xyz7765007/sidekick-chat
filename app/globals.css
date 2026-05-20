@@ -888,6 +888,7 @@ body { position: relative; }
 }
 .card-type-icon { font-size: 13px; }
 .card-type-movement { color: var(--acc-deep); }
+.card-type-callable { color: var(--acc); }
 .card-type-li       { color: #8B6FB0; }
 .card-type-ga       { color: var(--pos); }
 .card-type-top      { color: var(--warn); }
@@ -1067,3 +1068,49 @@ body { position: relative; }
   line-height: 1.4;
 }
 .signal-toggle:hover { color: var(--acc-deep); }
+
+/* AI summary + view-more toggle.
+   Summary is the default view: short, readable, SDR-friendly.
+   Below the summary, a small toggle reveals the full structured signal
+   (📊 score, 📋 rules, 📝 post details, etc.) for operators who want
+   to dig in. Loading + error states use the same container so the card
+   doesn't reflow as data arrives. */
+.card-signal-block {
+  margin-top: 14px;
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+}
+.card-summary {
+  font-size: 13.5px;
+  line-height: 1.55;
+  color: var(--t1);
+  padding: 10px 12px;
+  background: var(--bg-warm);
+  border-left: 2px solid var(--acc);
+  border-radius: 0 6px 6px 0;
+  white-space: pre-wrap;
+  word-break: break-word;
+}
+.card-summary-loading {
+  color: var(--t3);
+  font-style: italic;
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  background: transparent;
+  border-left-color: var(--border);
+}
+.card-view-more-btn {
+  align-self: flex-start;
+  background: transparent;
+  border: none;
+  color: var(--acc);
+  font-size: 11.5px;
+  font-weight: 500;
+  cursor: pointer;
+  padding: 2px 0;
+  font-family: inherit;
+  text-decoration: underline;
+}
+.card-view-more-btn:hover { color: var(--acc-deep); }
