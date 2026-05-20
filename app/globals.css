@@ -1114,3 +1114,31 @@ body { position: relative; }
   text-decoration: underline;
 }
 .card-view-more-btn:hover { color: var(--acc-deep); }
+
+/* AI personalization fallback warning. Shows on a batch lead card
+   when the server detected the connection note + DMs match the
+   deterministic fallback templates (i.e. AI generation silently
+   failed and every "personalized" message is actually the same
+   template every other un-personalized lead received). */
+.batch-ai-warning {
+  margin: 10px 0;
+  padding: 10px 12px;
+  background: #FFF4E5;
+  border-left: 3px solid var(--warn);
+  border-radius: 0 6px 6px 0;
+  font-size: 12.5px;
+  line-height: 1.45;
+}
+.batch-ai-warning-severe {
+  background: #FFE8E8;
+  border-left-color: var(--neg, #C0392B);
+}
+.batch-ai-warning-title {
+  font-weight: 600;
+  color: var(--t1);
+  margin-bottom: 4px;
+}
+.batch-ai-warning-detail {
+  color: var(--t2);
+  font-size: 12px;
+}

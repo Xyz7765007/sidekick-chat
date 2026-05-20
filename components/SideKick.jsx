@@ -114,6 +114,13 @@ export default function SideKick() {
   // duplicate fetches before the first one's setState resolves.
   const pendingSummariesRef = useRef(new Set());
 
+  // Session-only dismissals for top-callable cards. These items reference
+  // Lead records (not Task records), so the standard /api/action handler
+  // can't stamp them as Handled. Until a dedicated dismiss-callable
+  // endpoint exists, dismissed top-callable leads are tracked here and
+  // filtered out of the stack for the rest of the session. Reload resets.
+  const [dismissedCallableIds, setDismissedCallableIds] = useState(new Set());
+
   // Chat state — initialized empty, populated from Airtable on mount
   const [messages, setMessages] = useState([]);
   const [historyLoaded, setHistoryLoaded] = useState(false);
@@ -351,7 +358,9 @@ export default function SideKick() {
   useEffect(() => {
     if (cards.length === 0 && topCallable.length === 0) return;
     // Mirror the render-side stack composition to find the top card id.
-    const topCallableCards = topCallable.map(lead => ({
+    // Filter dismissed callable leads — same filter the render uses.
+    const visibleCallable = topCallable.filter(l => !dismissedCallableIds.has(l.id));
+    const topCallableCards = visibleCallable.map(lead => ({
       id: lead.id,
       task_type: "top_callable",
       score: lead.score,
@@ -422,7 +431,7 @@ export default function SideKick() {
       .finally(() => {
         pendingSummariesRef.current.delete(target.id);
       });
-  }, [cards, topCallable]);
+  }, [cards, topCallable, dismissedCallableIds]);
 
   // ─── Toast helper ───────────────────────────────────────────────
   function showToast(msg, ms = 2400) {
@@ -431,8 +440,35 @@ export default function SideKick() {
   }
 
   // ─── Action handler (Mark Done / Skip) ──────────────────────────
+  // Two paths:
+  //   1. Regular task cards (top_x, lead_movement, engagement,
+  //      linkedin_engagement) → POST /api/action → SignalScope stamps
+  //      the Task record with Handled At/As/Notes fields.
+  //   2. Top-callable cards → the id references a LEAD record (from the
+  //      Leads table), NOT a Task record. PATCHing /api/action on a
+  //      Lead id would 422 (or 404). For now we dismiss them client-side
+  //      and add the lead id to `dismissedCallableIds` so the next poll
+  //      doesn't bring them back during this session. A persistent
+  //      server-side dismissal would need a new endpoint that marks the
+  //      lead's underlying movement/top_x tasks as handled — deferred.
   async function handleAction(taskId, action) {
     setLeaving((s) => new Set([...s, taskId]));
+
+    // Is this a top-callable card? Check the merged feed.
+    const isTopCallable = topCallable.some(l => l.id === taskId);
+    if (isTopCallable) {
+      setDismissedCallableIds(prev => new Set([...prev, taskId]));
+      setTimeout(() => {
+        // Clear sticky so next poll's top card promotes correctly
+        if (stickyTopIdRef.current === taskId) {
+          stickyTopIdRef.current = null;
+        }
+        setLeaving((s) => { const ns = new Set(s); ns.delete(taskId); return ns; });
+      }, 300);
+      showToast(action === "done" ? "Marked done ✓ (session-only)" : "Skipped (session-only)");
+      return;
+    }
+
     try {
       const r = await fetch("/api/action", {
         method: "POST",
@@ -445,11 +481,22 @@ export default function SideKick() {
           setCards((c) => c.filter((card) => card.id !== taskId));
           setCount((n) => { const nn = Math.max(0, n - 1); countRef.current = nn; return nn; });
           setLeaving((s) => { const ns = new Set(s); ns.delete(taskId); return ns; });
+          // Clear sticky so the next render picks the new top card from
+          // the sorted stack (rather than waiting for next poll to re-resolve).
+          if (stickyTopIdRef.current === taskId) {
+            stickyTopIdRef.current = null;
+          }
         }, 300);
         showToast(action === "done" ? "Marked done ✓" : "Skipped");
       } else {
         setLeaving((s) => { const ns = new Set(s); ns.delete(taskId); return ns; });
-        showToast(`Error: ${data.error || "Action failed"}`, 4000);
+        // Setup-fix case: surface the curl command so operator can act
+        // immediately rather than digging through error logs.
+        if (data.needsSetup || /Handled At.*missing/i.test(data.error || "")) {
+          showToast("Setup needed: Tasks table is missing Handled fields. Have an admin run POST /api/setup-fix?key=…&baseId=… in SignalScope.", 8000);
+        } else {
+          showToast(`Error: ${data.error || "Action failed"}`, 4000);
+        }
       }
     } catch (e) {
       setLeaving((s) => { const ns = new Set(s); ns.delete(taskId); return ns; });
@@ -702,7 +749,11 @@ export default function SideKick() {
           // flows through the same Card component as movement / top_x
           // / etc. The `signal` field is joined from reasons[] so it
           // gets the same formatSignalText + ExpandableSignal treatment.
-          const topCallableCards = topCallable.map(lead => ({
+          // Drop any leads the operator dismissed this session — those
+          // can't be persisted server-side yet (top-callable points to
+          // Lead records, not Tasks) so we just hide them locally.
+          const visibleCallable = topCallable.filter(l => !dismissedCallableIds.has(l.id));
+          const topCallableCards = visibleCallable.map(lead => ({
             id: lead.id,
             task_type: "top_callable",
             score: lead.score,
@@ -1318,6 +1369,27 @@ function BatchLeadCard({ lead, index, total, onSend, onSkip, onEdit, editingDraf
       {reasons.length > 0 && (
         <div className="batch-lead-reasons">
           {reasons.map((r, i) => <div key={i} className="batch-reason">→ {r}</div>)}
+        </div>
+      )}
+
+      {/* AI personalization warning — shows when one or more messages
+          fell back to deterministic template (AI generation failed
+          silently). Server-side flag from /api/sidekick/auto-batch/pending.
+          When this fires, all 4 messages for that lead are the SAME
+          template every other lead received — only first_name + company
+          differ. Operator should review the AI Debug field on the
+          Outreach record in Airtable to diagnose the root cause, or
+          hit /api/sidekick/diagnose-ai for a live OpenAI test. */}
+      {lead.ai_any_fallback && (
+        <div className={`batch-ai-warning ${lead.ai_all_fallback ? "batch-ai-warning-severe" : ""}`}>
+          <div className="batch-ai-warning-title">
+            {lead.ai_all_fallback ? "⚠️ All messages used the fallback template — not personalized" : "⚠️ Some messages fell back to template"}
+          </div>
+          <div className="batch-ai-warning-detail">
+            {lead.ai_all_fallback
+              ? "AI generation failed for this lead. The connection note + 3 DMs are the same template every other un-personalized lead received. Hit /api/sidekick/diagnose-ai (with ?key=CRON_SECRET) to test OpenAI, or check the AI Debug field on this Outreach record in Airtable for the raw error."
+              : `Fell back: ${["connection_note","dm1","dm2","dm3"].filter(k => lead.ai_fallback_flags?.[k]).join(", ")}. The rest were AI-personalized.`}
+          </div>
         </div>
       )}
 
