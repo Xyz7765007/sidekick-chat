@@ -355,6 +355,19 @@ body { position: relative; }
   border: 1px solid rgba(196, 107, 107, 0.25);
 }
 .scan-error .scan-title { color: var(--danger); }
+.scan-extra-chip {
+  display: inline-block;
+  margin-left: 8px;
+  padding: 1px 7px;
+  font-size: 10px;
+  font-weight: 500;
+  font-family: 'JetBrains Mono', monospace;
+  color: var(--t2);
+  background: rgba(255, 255, 255, 0.06);
+  border: 1px solid rgba(255, 255, 255, 0.12);
+  border-radius: 8px;
+  vertical-align: middle;
+}
 .scan-spinner {
   width: 18px; height: 18px;
   border: 2px solid rgba(123, 159, 232, 0.2);

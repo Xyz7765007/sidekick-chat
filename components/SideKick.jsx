@@ -134,6 +134,7 @@ export default function SideKick() {
 
   // Movement scan status — polls every 30s, drives the live banner
   const [scanStatus, setScanStatus] = useState(null);
+  const [scanConcurrentCount, setScanConcurrentCount] = useState(0);
 
   // ─── LinkedIn auto-batch (Stage 1 — pre-send approval) ─────────
   // Replaces the old "Sent Messages Review" (which was post-send audit).
@@ -317,8 +318,10 @@ export default function SideKick() {
           }
           return data.run;
         });
+        setScanConcurrentCount(data.concurrentRunsCount || 0);
       } else {
         setScanStatus(null);
+        setScanConcurrentCount(0);
       }
     } catch {
       // Non-fatal — banner just stays hidden
@@ -651,7 +654,7 @@ export default function SideKick() {
           Email engine in development · LinkedIn DMs + tasks live
         </div>
 
-        <ScanBanner status={scanStatus} />
+        <ScanBanner status={scanStatus} concurrentRunsCount={scanConcurrentCount} />
 
         {loading && (
           <div className="loading">
@@ -973,7 +976,13 @@ function MessageCard({ message, leaving, onAction }) {
 // Live banner showing movement scan progress. Shows when state is running.
 // Also shows briefly (5 min) after state flips to done — then hides.
 // Hides on idle, error, cancelled (errors shown elsewhere).
-function ScanBanner({ status }) {
+//
+// Multi-tenant: when the upstream returns campaignName (multi-base mode)
+// we render it as a chip so the operator sees which client is being
+// scanned. When concurrent runs exist (rare today, expected as we add
+// more clients), we surface the count so it's obvious that other scans
+// are happening in parallel even though the banner only shows one.
+function ScanBanner({ status, concurrentRunsCount = 0 }) {
   if (!status) return null;
 
   // Compute time-since for last tick / completion
@@ -988,13 +997,18 @@ function ScanBanner({ status }) {
   }
 
   const moves = (status.hired || 0) + (status.promoted || 0) + (status.exited || 0);
+  const campaignLabel = status.campaignName || null;
+  const extraCount = Math.max(0, concurrentRunsCount - 1); // other runs besides the shown one
 
   if (status.state === "running") {
     return (
       <div className="scan-banner scan-running">
         <span className="scan-spinner" />
         <div className="scan-text">
-          <div className="scan-title">Movement scan in progress</div>
+          <div className="scan-title">
+            {campaignLabel ? `${campaignLabel} · ` : ""}Movement scan in progress
+            {extraCount > 0 ? <span className="scan-extra-chip"> +{extraCount} more running</span> : null}
+          </div>
           <div className="scan-detail">
             Batch {status.batchesRun || 0} · {status.totalProcessed || 0} leads scanned · {moves} movement{moves === 1 ? "" : "s"} found
             {status.lastTickAt ? ` · last tick ${timeAgo(status.lastTickAt)}` : ""}
@@ -1012,7 +1026,9 @@ function ScanBanner({ status }) {
       <div className="scan-banner scan-done">
         <span className="scan-check">✓</span>
         <div className="scan-text">
-          <div className="scan-title">Movement scan complete</div>
+          <div className="scan-title">
+            {campaignLabel ? `${campaignLabel} · ` : ""}Movement scan complete
+          </div>
           <div className="scan-detail">
             {status.totalProcessed || 0} leads scanned · {moves} movement{moves === 1 ? "" : "s"} ({status.hired || 0}H/{status.promoted || 0}P/{status.exited || 0}E) · ${(status.totalCostUSD || 0).toFixed(4)}
           </div>
