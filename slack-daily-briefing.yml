@@ -1,0 +1,54 @@
+name: Slack Daily Briefing
+
+# Runs at 04:30 UTC = 10:00 IST, Monday through Friday.
+#
+# Why GitHub Actions instead of Vercel Cron: Vercel Cron has reliability
+# quirks on the schedule we need, and the rest of the Side Kick OS uses
+# GitHub Actions for cron (Movement Scan Tick, Outreach Cron). Keeping
+# the same scheduling layer means one tool to monitor.
+#
+# GitHub also throttles 5-min crons under load but is reliable for
+# longer intervals like daily ones — a 24h cadence almost never gets
+# skipped, unlike the Movement Scan tick which runs every few minutes.
+
+on:
+  schedule:
+    # cron syntax: minute hour day-of-month month day-of-week
+    # 30 4 * * 1-5  →  04:30 UTC, Mon-Fri
+    - cron: '30 4 * * 1-5'
+  # Manual trigger — go to Actions tab → this workflow → "Run workflow"
+  # button. Useful for testing without waiting for tomorrow's scheduled run.
+  workflow_dispatch:
+
+jobs:
+  send-briefing:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Send daily briefing
+        env:
+          BRIEFING_ENDPOINT: ${{ secrets.BRIEFING_ENDPOINT }}
+          BRIEFING_CRON_SECRET: ${{ secrets.BRIEFING_CRON_SECRET }}
+        run: |
+          if [ -z "$BRIEFING_ENDPOINT" ]; then
+            echo "::error::BRIEFING_ENDPOINT secret not set in repo"
+            exit 1
+          fi
+          if [ -z "$BRIEFING_CRON_SECRET" ]; then
+            echo "::error::BRIEFING_CRON_SECRET secret not set in repo"
+            exit 1
+          fi
+          # Use POST so it's symmetric with manual trigger via curl from
+          # the operator's machine. The endpoint supports both GET and POST.
+          response=$(curl -sS -w "\n%{http_code}" -X POST \
+            -H "Authorization: Bearer $BRIEFING_CRON_SECRET" \
+            "$BRIEFING_ENDPOINT")
+          http_code=$(echo "$response" | tail -n 1)
+          body=$(echo "$response" | sed '$d')
+
+          echo "HTTP $http_code"
+          echo "Body: $body"
+
+          if [ "$http_code" != "200" ]; then
+            echo "::error::Briefing endpoint returned $http_code"
+            exit 1
+          fi
