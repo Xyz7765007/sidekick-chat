@@ -54,6 +54,13 @@ CURRENT LEADS (live snapshot of the pending task feed, highest-scored first):
 {{LEADS}}
 - This is the same data shown on the operator's card stack. When asked about a specific person ("why is X a good lead?", "tell me about X"), find them in this list and explain using their score and signal. If a lead the operator names is NOT in this list, say they're not in the current pending feed (maybe already handled or lower-priority) rather than inventing details.
 
+LEAD IN FOCUS (the operator has put a specific lead "in focus" — the chat is ABOUT this lead unless they clearly change topic):
+{{FOCUS}}
+- When a lead is in focus, default to answering about THAT lead. Use the focus block's score, signal, score reason, and movement type to give a clear, concrete answer.
+- If the operator asks "why is this person high-value / why call them now?", answer with the SPECIFIC reason from the focus data (the signal + score reason) — e.g. what just changed (movement, engagement), why it matters, and the suggested next step. Never answer "I only see the count" — when a lead is in focus you have their full card.
+- If the focused lead has a movement_type of "Exited", remember the company shown is the one they LEFT, not their current employer — phrase accordingly.
+- If the operator clearly switches to a general/other topic, you can step outside the focus; use judgement.
+
 RESPONSE FORMAT (MUST be valid JSON only — no markdown fences, no prose around it):
 {
   "reply": "Your conversational reply (terse, direct).",
@@ -162,7 +169,7 @@ export async function POST(request) {
   try { body = await request.json(); }
   catch { return Response.json({ ok: false, error: "Invalid JSON body" }, { status: 400 }); }
 
-  const { message, history, currentCount } = body || {};
+  const { message, history, currentCount, focusLead } = body || {};
   if (!message || typeof message !== "string") {
     return Response.json({ ok: false, error: "message required" }, { status: 400 });
   }
@@ -186,10 +193,35 @@ export async function POST(request) {
   // Append the new user message
   claudeMessages.push({ role: "user", content: message });
 
+  // Build the FOCUS block (pt7). When the operator has a lead in focus we
+  // inject its full card so Claude answers about THAT lead specifically.
+  // Defensive: only trust string/number fields; cap signal length.
+  let focusBlock = "(no lead in focus — this is general chat. Use CURRENT LEADS for any named lead.)";
+  if (focusLead && typeof focusLead === "object" && (focusLead.lead_name || focusLead.company)) {
+    const fl = focusLead;
+    let sig = String(fl.signal || "").replace(/\s+/g, " ").trim();
+    if (sig.length > 600) sig = sig.slice(0, 600) + "…";
+    let reason = String(fl.score_reason || "").replace(/\s+/g, " ").trim();
+    if (reason.length > 400) reason = reason.slice(0, 400) + "…";
+    const lines = [
+      `Name: ${fl.lead_name || "(unknown)"}`,
+      `Company: ${fl.company || "(unknown)"}${fl.movement_type === "Exited" ? " (this is the company they LEFT — not current)" : ""}`,
+      fl.lead_title ? `Title: ${fl.lead_title}` : null,
+      (fl.score !== null && fl.score !== undefined) ? `Score: ${fl.score}/100` : null,
+      fl.movement_type ? `Movement: ${fl.movement_type}` : null,
+      fl.task_rule ? `Task rule: ${fl.task_rule}` : null,
+      sig ? `Signal (why this surfaced): ${sig}` : null,
+      reason ? `Score reason: ${reason}` : null,
+      fl.lead_email ? `Email on file: ${fl.lead_email}` : null,
+    ].filter(Boolean);
+    focusBlock = lines.join("\n");
+  }
+
   // Substitute live values into the system prompt
   const systemPrompt = SYSTEM_PROMPT
     .replace("{{COUNT}}", String(currentCount ?? "unknown"))
-    .replace("{{LEADS}}", leadsSnapshot || "(lead feed unavailable right now — you only have the pending count above; ask the operator to check the card stack for specific leads.)");
+    .replace("{{LEADS}}", leadsSnapshot || "(lead feed unavailable right now — you only have the pending count above; ask the operator to check the card stack for specific leads.)")
+    .replace("{{FOCUS}}", focusBlock);
 
   // Call Claude
   let claudeReply = null;

@@ -129,6 +129,20 @@ export default function SideKick() {
   const chatScrollRef = useRef(null);
   const countRef = useRef(count); // kept in sync so /api/chat always gets fresh count
 
+  // ─── Chat focus context (pt7) ──────────────────────────────────
+  // The operator can put a specific lead "in focus" so chat is about
+  // THAT lead (the assistant gets the lead's full card injected) — or
+  // clear it to chat generally. Fixes the old "chat is contextless"
+  // complaint (pt6/pt7). Holds the trimmed card object or null.
+  const [focusLead, setFocusLead] = useState(null);
+
+  // ─── Email draft modal (pt4 V1: draft + edit + copy) ───────────
+  // V1 does NOT send. It composes an editable draft client-side from the
+  // lead's card data, the operator edits it, then copies to their mail
+  // client. Actual send-from-app is deferred to V2 (needs email infra).
+  // Shape: { lead_name, company, to, subject, body } or null.
+  const [emailDraft, setEmailDraft] = useState(null);
+
   // Cursor spotlight
   const [cursor, setCursor] = useState({ x: -1000, y: -1000 });
 
@@ -587,6 +601,9 @@ export default function SideKick() {
           message: text,
           history: historyForApi,
           currentCount: countRef.current,
+          // pt7: when a lead is in focus, send its full card so the
+          // orchestrator answers about THAT lead specifically.
+          focusLead: focusLead || null,
         }),
       });
       const data = await r.json();
@@ -610,10 +627,81 @@ export default function SideKick() {
   function getSubject(card) {
     return card.lead_name || card.company || "Untitled task";
   }
+
+  // ─── Focus context handlers (pt7) ───────────────────────────────
+  // Put a lead in focus for chat. Trims to the fields the orchestrator
+  // needs so the POST body stays small. Clears with a null arg.
+  function handleSetFocus(card) {
+    if (!card) { setFocusLead(null); return; }
+    setFocusLead({
+      lead_name: card.lead_name || "",
+      company: card.company || "",
+      lead_title: card.lead_title || "",
+      score: card.score ?? null,
+      signal: card.signal || "",
+      score_reason: card.score_reason || "",
+      movement_type: card.movement_type || "",
+      task_rule: card.task_rule || "",
+      lead_email: card.lead_email || "",
+      lead_linkedin: card.lead_linkedin || "",
+    });
+    showToast(`Chat now focused on ${card.lead_name || "this lead"}`, 2200);
+  }
+
+  // ─── Email draft (pt4 V1: draft + edit + copy, NO send) ─────────
+  // Composes an editable draft client-side from the lead's card data.
+  // Operator edits, then copies to their own mail client. Sending from
+  // the app is V2 (needs verified domain + provider — see Kanban).
+  function handleDraftEmail(card) {
+    const name = card.lead_name || "there";
+    const firstName = name.split(" ")[0];
+    const summary = summaries[card.id];
+    const summaryLine = (summary && summary !== "loading" && summary !== "error")
+      ? summary
+      : (card.signal || "").replace(/\s+/g, " ").trim().slice(0, 240);
+    // For an exited lead the `company` field is the OLD employer — make the
+    // body acknowledge they've moved rather than addressing the old company.
+    const movedNote = card.movement_type === "Exited"
+      ? `\n\nI saw you've recently moved on from ${card.company}. Congrats on the next chapter.`
+      : "";
+    const subject = card.movement_type === "Exited"
+      ? `Following your move from ${card.company}`
+      : `Quick note for ${firstName}${card.company ? ` at ${card.company}` : ""}`;
+    const body =
+`Hi ${firstName},${movedNote}
+
+${summaryLine ? summaryLine + "\n\n" : ""}I work on Side Kick — we help B2B teams turn buying signals into personalized outreach without the manual SDR overhead.
+
+Would a short chat be useful? Happy to share what we've been building if it's relevant.
+
+Best,
+`;
+    setEmailDraft({
+      lead_name: name,
+      company: card.company || "",
+      to: card.lead_email || "",
+      subject,
+      body,
+    });
+  }
+
   function getMeta(card) {
     const parts = [];
-    if (card.lead_name && card.company && card.lead_name !== card.company) parts.push(card.company);
-    if (card.lead_title) parts.push(card.lead_title);
+    if (card.lead_name && card.company && card.lead_name !== card.company) {
+      // pt3 fix: for an Exited movement the `company` field is the company
+      // the lead LEFT, not where they are now. Don't render it as current.
+      // The new company (if known) lives in the signal text / summary.
+      // Label it "Ex-<company>" so the operator isn't misled.
+      if (card.movement_type === "Exited") {
+        parts.push(`Ex-${card.company}`);
+      } else {
+        parts.push(card.company);
+      }
+    }
+    // pt3: only show the stored title as current when the lead has NOT exited.
+    // For an exited lead the stored title is also stale (it was their role at
+    // the old company), so suppress it — the signal carries their new role.
+    if (card.lead_title && card.movement_type !== "Exited") parts.push(card.lead_title);
     return parts.join(" · ");
   }
 
@@ -850,6 +938,9 @@ export default function SideKick() {
                 summary={summaries[topCard.id]}
                 onAction={handleAction}
                 onEnrichPhone={handleEnrichPhone}
+                onSetFocus={handleSetFocus}
+                onDraftEmail={handleDraftEmail}
+                isFocused={focusLead && focusLead.lead_name === topCard.lead_name && focusLead.company === topCard.company}
               />
               {remaining.length > 0 && <QueueIndicator count={remaining.length} breakdown={breakdown} />}
             </div>
@@ -868,13 +959,29 @@ export default function SideKick() {
 
       {/* Sticky chat input */}
       <div className="chat-input-wrap">
+        {/* pt7: focus chip — shows which lead chat is "about". Click ✕ to clear. */}
+        {focusLead && (
+          <div className="chat-focus-chip">
+            <span className="chat-focus-icon">🎯</span>
+            <span className="chat-focus-label">
+              Talking about: <strong>{focusLead.lead_name || "this lead"}</strong>
+              {focusLead.company ? ` · ${focusLead.movement_type === "Exited" ? "Ex-" : ""}${focusLead.company}` : ""}
+            </span>
+            <button
+              className="chat-focus-clear"
+              onClick={() => setFocusLead(null)}
+              title="Clear focus — chat about anything"
+              type="button"
+            >✕</button>
+          </div>
+        )}
         <div className="chat-input-inner">
           <input
             type="text"
             value={input}
             onChange={(e) => setInput(e.target.value)}
             onKeyDown={(e) => { if (e.key === "Enter") handleSubmit(e); }}
-            placeholder={chatBusy ? "Thinking…" : "Talk to Side Kick…"}
+            placeholder={chatBusy ? "Thinking…" : focusLead ? `Ask about ${focusLead.lead_name || "this lead"}…` : "Talk to Side Kick…"}
             disabled={chatBusy}
             className="chat-input"
             autoComplete="off"
@@ -893,6 +1000,16 @@ export default function SideKick() {
         </div>
       </div>
 
+      {/* pt4 V1: email draft modal — edit + copy, no send */}
+      {emailDraft && (
+        <EmailDraftModal
+          draft={emailDraft}
+          onChange={setEmailDraft}
+          onClose={() => setEmailDraft(null)}
+          onCopied={(what) => showToast(`${what} copied to clipboard`, 1800)}
+        />
+      )}
+
       <div className={`toast ${toast ? "show" : ""}`}>{toast}</div>
     </>
   );
@@ -903,6 +1020,81 @@ function ChatBubble({ msg }) {
     <div className={`chat-msg chat-msg-${msg.role}`}>
       {msg.role === "bot" && <div className="chat-avatar"><div className="dot" /></div>}
       <div className="chat-bubble">{msg.text}</div>
+    </div>
+  );
+}
+
+// ─── Email draft modal (pt4 V1) ──────────────────────────────────
+// Edit + copy only. NO send — actual send-from-app is V2 (needs a
+// verified sending domain + provider; see the SignalScope Kanban).
+// Uses navigator.clipboard with a textarea fallback for older browsers.
+// Also offers a mailto: link as a convenience (opens the operator's own
+// mail client with the draft prefilled — still their account, not ours).
+function EmailDraftModal({ draft, onChange, onClose, onCopied }) {
+  function copy(text, label) {
+    const done = () => onCopied?.(label);
+    if (navigator.clipboard?.writeText) {
+      navigator.clipboard.writeText(text).then(done).catch(() => fallbackCopy(text, done));
+    } else {
+      fallbackCopy(text, done);
+    }
+  }
+  function fallbackCopy(text, done) {
+    try {
+      const ta = document.createElement("textarea");
+      ta.value = text;
+      ta.style.position = "fixed";
+      ta.style.opacity = "0";
+      document.body.appendChild(ta);
+      ta.select();
+      document.execCommand("copy");
+      document.body.removeChild(ta);
+      done?.();
+    } catch {}
+  }
+  const mailto = `mailto:${encodeURIComponent(draft.to || "")}?subject=${encodeURIComponent(draft.subject || "")}&body=${encodeURIComponent(draft.body || "")}`;
+
+  return (
+    <div className="email-modal-overlay" onClick={onClose}>
+      <div className="email-modal" onClick={(e) => e.stopPropagation()}>
+        <div className="email-modal-hdr">
+          <span>✉ Draft email — {draft.lead_name}</span>
+          <button className="email-modal-close" onClick={onClose} type="button">✕</button>
+        </div>
+        <div className="email-modal-note">
+          V1: edit then copy or open in your mail client. Sending from the app is coming in V2.
+        </div>
+        <label className="email-field">
+          <span>To {draft.to ? "" : "(no email on file — add the new-company address)"}</span>
+          <input
+            type="email"
+            value={draft.to}
+            placeholder="name@newcompany.com"
+            onChange={(e) => onChange({ ...draft, to: e.target.value })}
+          />
+        </label>
+        <label className="email-field">
+          <span>Subject</span>
+          <input
+            type="text"
+            value={draft.subject}
+            onChange={(e) => onChange({ ...draft, subject: e.target.value })}
+          />
+        </label>
+        <label className="email-field">
+          <span>Body</span>
+          <textarea
+            rows={10}
+            value={draft.body}
+            onChange={(e) => onChange({ ...draft, body: e.target.value })}
+          />
+        </label>
+        <div className="email-modal-actions">
+          <button className="btn" onClick={() => copy(draft.body, "Body")} type="button">Copy body</button>
+          <button className="btn" onClick={() => copy(`Subject: ${draft.subject}\n\n${draft.body}`, "Email")} type="button">Copy all</button>
+          <a className="btn primary" href={mailto}>Open in mail client</a>
+        </div>
+      </div>
     </div>
   );
 }
@@ -1052,7 +1244,7 @@ function ScanBanner({ status, concurrentRunsCount = 0 }) {
   return null;
 }
 
-function Card({ card, leaving, enriching, subject, meta, summary, onAction, onEnrichPhone }) {
+function Card({ card, leaving, enriching, subject, meta, summary, onAction, onEnrichPhone, onSetFocus, onDraftEmail, isFocused }) {
   const hasLink = !!card.url;
   const hasPhone = !!card.lead_phone;
   const hasLinkedIn = !!card.lead_linkedin && card.lead_linkedin !== card.url;
@@ -1174,6 +1366,24 @@ function Card({ card, leaving, enriching, subject, meta, summary, onAction, onEn
           </button>
         </div>
         <div className="card-actions-secondary">
+          {/* pt7: put this lead in focus for chat (or clear it) */}
+          {onSetFocus && (card.lead_name || card.company) && (
+            <button
+              className={`card-icon-btn ${isFocused ? "card-icon-btn-active" : ""}`}
+              onClick={() => onSetFocus(isFocused ? null : card)}
+              title={isFocused ? "Stop focusing chat on this lead" : "Focus chat on this lead"}
+              type="button"
+            >{isFocused ? "🎯" : "💬"}</button>
+          )}
+          {/* pt4 V1: draft an email to this lead (edit + copy, no send) */}
+          {onDraftEmail && (card.lead_name || card.lead_email) && (
+            <button
+              className="card-icon-btn"
+              onClick={() => onDraftEmail(card)}
+              title="Draft an email to this lead"
+              type="button"
+            >✉</button>
+          )}
           {hasLink && (
             <a
               className="card-icon-btn"
