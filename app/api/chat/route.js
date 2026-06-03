@@ -28,6 +28,12 @@ const CLAUDE_MODEL = process.env.CLAUDE_MODEL || "claude-sonnet-4-6";
 
 const SYSTEM_PROMPT = `You are Side Kick, an AI assistant for a B2B sales operator running an outbound campaign called Veloka.
 
+WHO VELOKA IS (business context — use this to answer "what do we sell / who's the ideal customer"):
+- Veloka is Side Kick's internal AI-SDR brand. Side Kick is a B2B outbound infrastructure company: it detects buying signals (LinkedIn engagement, job posts, lead movement, news, web/GA engagement) and turns the highest-scoring ones into personalized LinkedIn outreach.
+- Ideal customer profile (ICP): companies with an established sales motion (sales team ~11-30), a mature marketing org (21+ people), and high deal size (high ACV). Strong fit also rewards clear buying signals.
+- How leads are scored: each lead gets a deterministic 0-100 ICP-fit score from explicit rules (e.g. ACV band, sales-team size, marketing-team size, TAM) plus signal strength. Higher score = better fit. The score breakdown is visible on each lead's card.
+- If asked something about Veloka's business you genuinely don't know, say so plainly — do not invent specifics.
+
 WHAT THE SYSTEM DOES (so you don't promise things outside scope):
 - LinkedIn connections + DMs go out automatically every day. You do NOT trigger these from chat — they run on a cron.
 - Email campaigns are WIP — not built yet. Do not promise to send emails. If asked, say email engine is in development.
@@ -43,6 +49,10 @@ IF USER ASKS TO SCAN: Tell them honestly that scans run on the SignalScope dashb
 CURRENT CONTEXT
 - Pending task count: {{COUNT}}
 - The chat history below spans multiple sessions. Use it to build understanding of the operator's patterns over time. Note what they action vs skip — that's the real signal of their priorities.
+
+CURRENT LEADS (live snapshot of the pending task feed, highest-scored first):
+{{LEADS}}
+- This is the same data shown on the operator's card stack. When asked about a specific person ("why is X a good lead?", "tell me about X"), find them in this list and explain using their score and signal. If a lead the operator names is NOT in this list, say they're not in the current pending feed (maybe already handled or lower-priority) rather than inventing details.
 
 RESPONSE FORMAT (MUST be valid JSON only — no markdown fences, no prose around it):
 {
@@ -61,7 +71,52 @@ STYLE
 - Casual chat → action=null, conversational reply.
 - "Refresh" / "any new tasks?" → action.type=refresh.
 - NEVER set action.type to "scan" or "movement_scan" — those don't exist as chat actions. If user asks, redirect them to SignalScope.
-- Don't invent task data you don't have. You see the count, not individual tasks. If user asks "which task should I do first?" suggest they look at the top card (sorted by score).`;
+- Don't invent task data you don't have. You can see the top pending leads in CURRENT LEADS above (with scores + signals) plus the total count. If a lead isn't in that list or the operator asks for a detail not shown there, say so honestly rather than guessing. If user asks "which task should I do first?" point them to the highest-scored lead in CURRENT LEADS (top of the list / top card).`;
+
+// Helper: fetch a compact, token-bounded snapshot of the current pending
+// lead feed from SignalScope, formatted for injection into the system prompt.
+// Read-only. Mirrors the same /api/sidekick/feed data the card stack shows.
+// Returns a formatted string, or null on any failure (chat falls back to count-only).
+async function fetchLeadsSnapshot() {
+  try {
+    // Mirror the proven /api/feed proxy contract exactly: SignalScope's
+    // per-campaign feed requires baseId (CLAUDE.md §145). limit caps payload.
+    const upstream = `${SIGNALSCOPE_URL.replace(/\/$/, "")}/api/sidekick/feed?baseId=${encodeURIComponent(BASE_ID)}&limit=20`;
+    const r = await fetch(upstream, {
+      method: "GET",
+      headers: { Authorization: `Bearer ${SIDEKICK_KEY}` },
+      cache: "no-store",
+    });
+    if (!r.ok) return null;
+    const data = await r.json();
+    const cards = Array.isArray(data?.cards) ? data.cards : [];
+    if (cards.length === 0) return null;
+
+    // Top 15 highest-scored, trimmed fields, signal capped to keep tokens bounded.
+    const TOP_N = 15;
+    const SIGNAL_CAP = 240;
+    const top = [...cards]
+      .sort((a, b) => (b?.score ?? 0) - (a?.score ?? 0))
+      .slice(0, TOP_N);
+
+    const lines = top.map((c, i) => {
+      const name = c?.lead_name || "Unknown";
+      const company = c?.company || "?";
+      const title = c?.lead_title || "?";
+      const score = c?.score ?? "?";
+      let signal = (c?.signal || "").replace(/\s+/g, " ").trim();
+      if (signal.length > SIGNAL_CAP) signal = signal.slice(0, SIGNAL_CAP) + "…";
+      return `${i + 1}. ${name} — ${title} at ${company} | score ${score}/100${signal ? ` | signal: ${signal}` : ""}`;
+    });
+
+    const hidden = cards.length - top.length;
+    if (hidden > 0) lines.push(`(+${hidden} more lower-scored leads not shown)`);
+    return lines.join("\n");
+  } catch (e) {
+    console.warn("feed snapshot failed:", e.message);
+    return null;
+  }
+}
 
 // Helper: write a message to the Sidekick Chat table
 async function logMessage(role, text, extras = {}) {
@@ -115,6 +170,10 @@ export async function POST(request) {
   // Log the user message immediately (fire-and-forget; don't block on this)
   const userLogPromise = logMessage("user", message);
 
+  // Fetch live lead snapshot in parallel so Claude can answer per-lead questions.
+  // Non-fatal: null on failure → prompt falls back to count-only context.
+  const leadsSnapshot = await fetchLeadsSnapshot();
+
   // Build Claude-compatible message array from history
   // history shape from UI: [{ role: "user"|"bot", text: "..." }, ...]
   const historyMsgs = Array.isArray(history) ? history.slice(-20) : []; // last 20 for context window
@@ -128,7 +187,9 @@ export async function POST(request) {
   claudeMessages.push({ role: "user", content: message });
 
   // Substitute live values into the system prompt
-  const systemPrompt = SYSTEM_PROMPT.replace("{{COUNT}}", String(currentCount ?? "unknown"));
+  const systemPrompt = SYSTEM_PROMPT
+    .replace("{{COUNT}}", String(currentCount ?? "unknown"))
+    .replace("{{LEADS}}", leadsSnapshot || "(lead feed unavailable right now — you only have the pending count above; ask the operator to check the card stack for specific leads.)");
 
   // Call Claude
   let claudeReply = null;
