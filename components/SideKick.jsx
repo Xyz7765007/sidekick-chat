@@ -655,14 +655,16 @@ export default function SideKick() {
   function handleDraftEmail(card) {
     const name = card.lead_name || "there";
     const firstName = name.split(" ")[0];
-    const summary = summaries[card.id];
-    const summaryLine = (summary && summary !== "loading" && summary !== "error")
-      ? summary
-      : (card.signal || "").replace(/\s+/g, " ").trim().slice(0, 240);
+    // IMPORTANT: do NOT seed the body with the SDR summary or score_reason —
+    // those are INTERNAL (they contain "69/100 fit", rule names, etc.) and this
+    // draft goes TO the lead. Use only lead-safe, public-facing context.
     // For an exited lead the `company` field is the OLD employer — make the
     // body acknowledge they've moved rather than addressing the old company.
     const movedNote = card.movement_type === "Exited"
       ? `\n\nI saw you've recently moved on from ${card.company}. Congrats on the next chapter.`
+      : "";
+    const roleLine = card.lead_title && card.company && card.movement_type !== "Exited"
+      ? `I came across your work as ${card.lead_title} at ${card.company}. `
       : "";
     const subject = card.movement_type === "Exited"
       ? `Following your move from ${card.company}`
@@ -670,7 +672,7 @@ export default function SideKick() {
     const body =
 `Hi ${firstName},${movedNote}
 
-${summaryLine ? summaryLine + "\n\n" : ""}I work on Side Kick — we help B2B teams turn buying signals into personalized outreach without the manual SDR overhead.
+${roleLine}I work on Side Kick — we help B2B teams turn buying signals into personalized outreach without the manual SDR overhead.
 
 Would a short chat be useful? Happy to share what we've been building if it's relevant.
 
