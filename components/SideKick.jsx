@@ -22,6 +22,32 @@ const FEED_LIMIT = 20;
 const HISTORY_LIMIT = 30;
 
 // ─────────────────────────────────────────────────────────────────────
+// Clipboard helper — navigator.clipboard with a textarea fallback for
+// older browsers / non-secure contexts. Extracted to module scope so the
+// LinkedIn comment flow and the email draft modal share one impl.
+// ─────────────────────────────────────────────────────────────────────
+function copyToClipboard(text, done) {
+  if (navigator.clipboard?.writeText) {
+    navigator.clipboard.writeText(text).then(() => done?.()).catch(() => fallbackCopy(text, done));
+  } else {
+    fallbackCopy(text, done);
+  }
+}
+function fallbackCopy(text, done) {
+  try {
+    const ta = document.createElement("textarea");
+    ta.value = text;
+    ta.style.position = "fixed";
+    ta.style.opacity = "0";
+    document.body.appendChild(ta);
+    ta.select();
+    document.execCommand("copy");
+    document.body.removeChild(ta);
+    done?.();
+  } catch {}
+}
+
+// ─────────────────────────────────────────────────────────────────────
 // Signal text formatter
 // Server delivers the signal as one big paragraph with emoji markers
 // inline (→, 📝, 💬, 🔍, 💡, 📊, 📋, •). Operators were getting walls of
@@ -114,6 +140,15 @@ export default function SideKick() {
   // duplicate fetches before the first one's setState resolves.
   const pendingSummariesRef = useRef(new Set());
 
+  // ─── LinkedIn comment flow cache (item 1) ──────────────────────
+  // Keyed by card.id → { status: "loading"|"ready"|"error",
+  //   summary, bullets, angles } for the angle brief. Lazy-fetched for
+  //   the visible top card the same way summaries are, so we don't burn
+  //   tokens on cards the operator never reaches. The generated comment
+  //   itself lives in component-local state inside LinkedInCommentCard.
+  const [commentData, setCommentData] = useState({});
+  const pendingCommentDataRef = useRef(new Set());
+
   // Session-only dismissals for top-callable cards. These items reference
   // Lead records (not Task records), so the standard /api/action handler
   // can't stamp them as Handled. Until a dedicated dismiss-callable
@@ -158,6 +193,10 @@ export default function SideKick() {
   const [autoBatches, setAutoBatches] = useState([]);
   const [batchLeaving, setBatchLeaving] = useState(new Set());
   const [batchExpanded, setBatchExpanded] = useState(new Set()); // batch IDs currently "Review one-by-one"
+  // item 5: the daily batch card is collapsed to a compact single-line
+  // entry by default so it doesn't compete with the unified task stack.
+  // Click the compact row to open it. Resets on reload (session-only).
+  const [batchCollapsed, setBatchCollapsed] = useState(true);
   const [editingDraft, setEditingDraft] = useState(null); // { recordId, field, text }
   const [batchGenerating, setBatchGenerating] = useState(false);
 
@@ -416,6 +455,11 @@ export default function SideKick() {
     }
     if (!target) return;
 
+    // LinkedIn-engagement cards use the dedicated comment flow (item 1),
+    // which fetches its own post brief via /api/comment-angles. Don't also
+    // spend on an SDR summary it never displays.
+    if (target.task_type === "linkedin_engagement") return;
+
     // Already cached / loading / in-flight? Skip.
     if (summaries[target.id]) return;
     if (pendingSummariesRef.current.has(target.id)) return;
@@ -449,6 +493,48 @@ export default function SideKick() {
         pendingSummariesRef.current.delete(target.id);
       });
   }, [cards, topCallable, dismissedCallableIds]);
+
+  // ─── Lazy comment-angle fetch (item 1) ──────────────────────────
+  // When the visible top card is a LinkedIn-engagement card, fetch the
+  // 3 commenting angles once and cache by card.id. Mirrors the summary
+  // lazy-fetch so we never spend tokens on cards the operator never sees.
+  // Only the TOP card is considered (matches the single-card stack UX).
+  const fetchCommentAngles = useCallback((card) => {
+    if (!card || card.task_type !== "linkedin_engagement") return;
+    if (commentData[card.id]) return;
+    if (pendingCommentDataRef.current.has(card.id)) return;
+
+    pendingCommentDataRef.current.add(card.id);
+    setCommentData(s => ({ ...s, [card.id]: { status: "loading" } }));
+
+    fetch("/api/comment-angles", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({
+        lead_name: card.lead_name,
+        company: card.company,
+        lead_title: card.lead_title,
+        // signal carries the post content; route caps + strips internal markers
+        signal: card.signal,
+        url: card.url || card.lead_linkedin || "",
+      }),
+    })
+      .then(r => r.json())
+      .then(d => {
+        setCommentData(s => ({
+          ...s,
+          [card.id]: d.ok
+            ? { status: "ready", summary: d.summary, bullets: d.bullets || [], angles: d.angles || [] }
+            : { status: "error" },
+        }));
+      })
+      .catch(() => {
+        setCommentData(s => ({ ...s, [card.id]: { status: "error" } }));
+      })
+      .finally(() => {
+        pendingCommentDataRef.current.delete(card.id);
+      });
+  }, [commentData]);
 
   // ─── Toast helper ───────────────────────────────────────────────
   function showToast(msg, ms = 2400) {
@@ -648,6 +734,22 @@ export default function SideKick() {
     showToast(`Chat now focused on ${card.lead_name || "this lead"}`, 2200);
   }
 
+  // ─── Per-item feedback affordance (item 4) ──────────────────────
+  // Lightweight, frontend-only: focus chat on the lead and prefill the
+  // chat input with a feedback scaffold. The operator finishes the
+  // sentence and sends — it flows through the existing /api/chat + chat
+  // history (which is how future output gets trained). No new backend.
+  function handleItemFeedback(card, itemLabel) {
+    handleSetFocus(card);
+    const who = card.lead_name || card.company || "this lead";
+    setInput(`Feedback on the ${itemLabel} for ${who}: `);
+    // Move focus to the chat input so the operator can type immediately.
+    setTimeout(() => {
+      const el = document.querySelector(".chat-input");
+      if (el) el.focus();
+    }, 50);
+  }
+
   // ─── Email draft (pt4 V1: draft + edit + copy, NO send) ─────────
   // Composes an editable draft client-side from the lead's card data.
   // Operator edits, then copies to their own mail client. Sending from
@@ -806,6 +908,8 @@ Best,
             <DailyBatchCard
               key="merged-pending-batch"
               batch={mergedBatch}
+              collapsed={batchCollapsed}
+              onToggleCollapsed={() => setBatchCollapsed(v => !v)}
               expanded={batchExpanded.has("all")}
               onToggleExpand={() => {
                 setBatchExpanded(prev => {
@@ -822,6 +926,7 @@ Best,
               onEditField={(recordId, field, newText) => handleBatchAction("edit", { recordId, field, newText })}
               editingDraft={editingDraft}
               setEditingDraft={setEditingDraft}
+              onItemFeedback={handleItemFeedback}
             />
           );
         })()}
@@ -928,22 +1033,41 @@ Best,
             other:     remaining.filter(c => !["lead_movement", "top_callable", "top_x", "linkedin_engagement", "engagement"].includes(c.task_type)).length,
           };
 
+          const topIsFocused = focusLead && focusLead.lead_name === topCard.lead_name && focusLead.company === topCard.company;
+
           return (
             <div className="task-stack">
-              <Card
-                key={topCard.id}
-                card={topCard}
-                leaving={leaving.has(topCard.id)}
-                enriching={enriching.has(topCard.id)}
-                subject={getSubject(topCard)}
-                meta={getMeta(topCard)}
-                summary={summaries[topCard.id]}
-                onAction={handleAction}
-                onEnrichPhone={handleEnrichPhone}
-                onSetFocus={handleSetFocus}
-                onDraftEmail={handleDraftEmail}
-                isFocused={focusLead && focusLead.lead_name === topCard.lead_name && focusLead.company === topCard.company}
-              />
+              {topCard.task_type === "linkedin_engagement" ? (
+                <LinkedInCommentCard
+                  key={topCard.id}
+                  card={topCard}
+                  leaving={leaving.has(topCard.id)}
+                  subject={getSubject(topCard)}
+                  meta={getMeta(topCard)}
+                  commentData={commentData[topCard.id]}
+                  onRequestAngles={() => fetchCommentAngles(topCard)}
+                  onAction={handleAction}
+                  onSetFocus={handleSetFocus}
+                  onItemFeedback={handleItemFeedback}
+                  isFocused={topIsFocused}
+                  onCopied={(msg) => showToast(msg, 2600)}
+                />
+              ) : (
+                <Card
+                  key={topCard.id}
+                  card={topCard}
+                  leaving={leaving.has(topCard.id)}
+                  enriching={enriching.has(topCard.id)}
+                  subject={getSubject(topCard)}
+                  meta={getMeta(topCard)}
+                  summary={summaries[topCard.id]}
+                  onAction={handleAction}
+                  onEnrichPhone={handleEnrichPhone}
+                  onSetFocus={handleSetFocus}
+                  onDraftEmail={handleDraftEmail}
+                  isFocused={topIsFocused}
+                />
+              )}
               {remaining.length > 0 && <QueueIndicator count={remaining.length} breakdown={breakdown} />}
             </div>
           );
@@ -1034,25 +1158,7 @@ function ChatBubble({ msg }) {
 // mail client with the draft prefilled — still their account, not ours).
 function EmailDraftModal({ draft, onChange, onClose, onCopied }) {
   function copy(text, label) {
-    const done = () => onCopied?.(label);
-    if (navigator.clipboard?.writeText) {
-      navigator.clipboard.writeText(text).then(done).catch(() => fallbackCopy(text, done));
-    } else {
-      fallbackCopy(text, done);
-    }
-  }
-  function fallbackCopy(text, done) {
-    try {
-      const ta = document.createElement("textarea");
-      ta.value = text;
-      ta.style.position = "fixed";
-      ta.style.opacity = "0";
-      document.body.appendChild(ta);
-      ta.select();
-      document.execCommand("copy");
-      document.body.removeChild(ta);
-      done?.();
-    } catch {}
+    copyToClipboard(text, () => onCopied?.(label));
   }
   const mailto = `mailto:${encodeURIComponent(draft.to || "")}?subject=${encodeURIComponent(draft.subject || "")}&body=${encodeURIComponent(draft.body || "")}`;
 
@@ -1431,6 +1537,229 @@ function Card({ card, leaving, enriching, subject, meta, summary, onAction, onEn
 }
 
 // ═══════════════════════════════════════════════════════════════════
+// LINKEDIN COMMENT CARD (item 1 — Kunal's favorite experience)
+// Dedicated rich flow for task_type === "linkedin_engagement" cards.
+//   - Title (author + company), a short summary, bullet points of what
+//     the post is about, and a "View full post" CTA.
+//   - 3 distinct angle chips (lazy-fetched via /api/comment-angles).
+//   - Pick an angle → /api/generate-comment → editable comment textarea
+//     + Regenerate.
+//   - "Comment on LinkedIn" opens the post URL in a new tab AND copies
+//     the comment to the clipboard. NO auto-post, NO backend side-effects.
+//   - Mark Done / Skip via the existing handleAction.
+//
+// Internal-vs-public split: the angle + comment routes are told to treat
+// the signal purely as the post's content and never surface scores / rule
+// names. The card itself shows the model-generated public summary/bullets,
+// NOT the raw internal signal.
+// ═══════════════════════════════════════════════════════════════════
+function LinkedInCommentCard({
+  card, leaving, subject, meta, commentData,
+  onRequestAngles, onAction, onSetFocus, onItemFeedback, isFocused, onCopied,
+}) {
+  const isDisabled = leaving;
+  const postUrl = card.url || card.lead_linkedin || "";
+
+  const [chosenAngleId, setChosenAngleId] = useState(null);
+  const [comment, setComment] = useState("");
+  const [commentStatus, setCommentStatus] = useState("idle"); // idle | loading | ready | error
+  const [persona, setPersona] = useState("");
+
+  // Lazy-fetch angles when this card mounts (it only mounts when it's the
+  // visible top card — the stack renders one card at a time).
+  useEffect(() => {
+    onRequestAngles?.();
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [card.id]);
+
+  const status = commentData?.status || "loading";
+  const angles = commentData?.angles || [];
+  const bullets = commentData?.bullets || [];
+  const postSummary = commentData?.summary || "";
+
+  async function generate(angle) {
+    if (!angle) return;
+    setCommentStatus("loading");
+    try {
+      const r = await fetch("/api/generate-comment", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          lead_name: card.lead_name,
+          company: card.company,
+          lead_title: card.lead_title,
+          signal: card.signal,
+          url: postUrl,
+          angle: { label: angle.label, hint: angle.hint },
+          persona,
+        }),
+      });
+      const d = await r.json();
+      if (d.ok) {
+        setComment(d.comment);
+        setCommentStatus("ready");
+      } else {
+        setCommentStatus("error");
+      }
+    } catch {
+      setCommentStatus("error");
+    }
+  }
+
+  function pickAngle(angle) {
+    setChosenAngleId(angle.id);
+    generate(angle);
+  }
+  function regenerate() {
+    const a = angles.find(x => x.id === chosenAngleId);
+    if (a) generate(a);
+  }
+
+  function commentOnLinkedIn() {
+    if (postUrl) window.open(postUrl, "_blank", "noopener,noreferrer");
+    copyToClipboard(comment, () => onCopied?.("Comment copied — paste it on LinkedIn."));
+  }
+
+  return (
+    <div className={`card card-stack li-comment-card ${leaving ? "leaving" : "entering"}`}>
+      <div className="card-header">
+        <span className="card-type card-type-li">
+          <span className="card-type-icon">💬</span>
+          LinkedIn comment
+        </span>
+        {typeof card.score === "number" && card.score > 0 && (
+          <span className="card-score-chip" title={`Composite score ${card.score}`}>{card.score}</span>
+        )}
+      </div>
+
+      {/* Title — author + company */}
+      <div className="card-name">{subject}</div>
+      {meta && <div className="card-meta">{meta}</div>}
+
+      {/* Post summary + bullets (public-facing, model-generated) */}
+      <div className="li-post-block">
+        {status === "loading" && (
+          <div className="card-summary card-summary-loading">
+            <span className="spinner spinner-sm" /> Reading the post…
+          </div>
+        )}
+        {status === "error" && (
+          <div className="li-post-error">Couldn't load the post brief. You can still open the post and Mark Done.</div>
+        )}
+        {status === "ready" && (
+          <>
+            {postSummary && <div className="card-summary">{postSummary}</div>}
+            {bullets.length > 0 && (
+              <ul className="li-post-bullets">
+                {bullets.map((b, i) => <li key={i}>{b}</li>)}
+              </ul>
+            )}
+          </>
+        )}
+        {postUrl && (
+          <a className="li-view-post" href={postUrl} target="_blank" rel="noopener noreferrer">
+            ↗ View full post
+          </a>
+        )}
+      </div>
+
+      {/* Angle chips */}
+      {status === "ready" && angles.length > 0 && (
+        <div className="li-angles">
+          <div className="li-angles-label">Pick an angle to comment from:</div>
+          <div className="li-angles-row">
+            {angles.map((a) => (
+              <button
+                key={a.id}
+                className={`li-angle-chip ${chosenAngleId === a.id ? "li-angle-chip-active" : ""}`}
+                onClick={() => pickAngle(a)}
+                disabled={isDisabled}
+                title={a.hint}
+                type="button"
+              >
+                {a.label}
+              </button>
+            ))}
+          </div>
+        </div>
+      )}
+
+      {/* Generated comment (editable) + regenerate */}
+      {chosenAngleId && (
+        <div className="li-comment-block">
+          {commentStatus === "loading" && (
+            <div className="card-summary card-summary-loading">
+              <span className="spinner spinner-sm" /> Writing a comment…
+            </div>
+          )}
+          {commentStatus === "error" && (
+            <div className="li-post-error">Comment generation failed. Try Regenerate or a different angle.</div>
+          )}
+          {(commentStatus === "ready" || (commentStatus !== "loading" && comment)) && (
+            <>
+              <div className="li-comment-hdr">
+                <span className="li-comment-label">Your comment (editable)</span>
+                <span className="li-comment-meta">{comment.length} chars</span>
+              </div>
+              <textarea
+                className="li-comment-edit"
+                value={comment}
+                rows={Math.max(3, Math.min(8, Math.ceil((comment.length || 1) / 70)))}
+                onChange={(e) => setComment(e.target.value)}
+              />
+              <div className="li-comment-row">
+                <button className="btn" onClick={regenerate} disabled={isDisabled || commentStatus === "loading"} type="button">
+                  ↻ Regenerate
+                </button>
+                {onItemFeedback && (
+                  <button
+                    className="btn"
+                    onClick={() => onItemFeedback(card, "LinkedIn comment")}
+                    type="button"
+                    title="Give feedback on this comment to train future output"
+                  >💬 feedback</button>
+                )}
+                <button
+                  className="btn primary"
+                  onClick={commentOnLinkedIn}
+                  disabled={isDisabled || !comment.trim()}
+                  type="button"
+                  title="Opens the post in a new tab and copies your comment"
+                >
+                  ↗ Comment on LinkedIn
+                </button>
+              </div>
+            </>
+          )}
+        </div>
+      )}
+
+      {/* Actions: Mark Done / Skip (primary) + focus chat (secondary) */}
+      <div className="card-actions-row">
+        <div className="card-actions-primary">
+          <button className="btn primary" disabled={isDisabled} onClick={() => onAction(card.id, "done")}>
+            ✓ Mark Done
+          </button>
+          <button className="btn danger" disabled={isDisabled} onClick={() => onAction(card.id, "skip")}>
+            Skip
+          </button>
+        </div>
+        <div className="card-actions-secondary">
+          {onSetFocus && (card.lead_name || card.company) && (
+            <button
+              className={`card-icon-btn ${isFocused ? "card-icon-btn-active" : ""}`}
+              onClick={() => onSetFocus(isFocused ? null : card)}
+              title={isFocused ? "Stop focusing chat on this lead" : "Focus chat on this lead"}
+              type="button"
+            >{isFocused ? "🎯" : "💬"}</button>
+          )}
+        </div>
+      </div>
+    </div>
+  );
+}
+
+// ═══════════════════════════════════════════════════════════════════
 // QUEUE INDICATOR
 // Shown below the visible top card. Tells operator how many tasks are
 // queued behind + breakdown by type so they know what's coming next
@@ -1492,15 +1821,29 @@ function buildScoreTooltip(lead) {
 // per-lead BatchLeadCards on "Review one-by-one".
 // ═══════════════════════════════════════════════════════════════════
 function DailyBatchCard({
-  batch, expanded, onToggleExpand,
+  batch, collapsed, onToggleCollapsed, expanded, onToggleExpand,
   onSendAll, onSkipAll, onSendOne, onSkipOne, onEditField,
-  editingDraft, setEditingDraft,
+  editingDraft, setEditingDraft, onItemFeedback,
 }) {
   const count = batch.leads?.length || 0;
   if (count === 0) return null;
 
   const totalConnChars = (batch.leads || []).reduce((s, l) => s + (l.connection_note?.length || 0), 0);
   const avgConnChars = Math.round(totalConnChars / count);
+
+  // item 5: collapsed by default to a compact single-line entry so the
+  // unified task stack stays the focal point. Click to expand.
+  if (collapsed) {
+    return (
+      <button className="batch-compact" onClick={onToggleCollapsed} type="button">
+        <span className="batch-compact-icon">🤝</span>
+        <span className="batch-compact-text">
+          Daily LinkedIn batch · <strong>{count} ready</strong>
+        </span>
+        <span className="batch-compact-cta">Review →</span>
+      </button>
+    );
+  }
 
   return (
     <div className="batch-card">
@@ -1514,19 +1857,25 @@ function DailyBatchCard({
             </div>
           </div>
         </div>
+        <button className="batch-collapse-btn" onClick={onToggleCollapsed} type="button" title="Collapse">
+          ▲
+        </button>
       </div>
 
+      {/* item 3: two primaries only. "Review one-by-one" is demoted to a
+          quieter inline text toggle below the primary row, not a third
+          equal-weight button. */}
       <div className="batch-ctas">
         <button className="btn primary" onClick={onSendAll}>
           ▶ Send all {count}
-        </button>
-        <button className="btn" onClick={onToggleExpand}>
-          {expanded ? "▼ Hide reviews" : "👀 Review one-by-one"}
         </button>
         <button className="btn danger" onClick={onSkipAll}>
           ⏭ Skip today
         </button>
       </div>
+      <button className="batch-review-toggle" onClick={onToggleExpand} type="button">
+        {expanded ? "▼ Hide reviews" : "👀 Review one-by-one"}
+      </button>
 
       {expanded && (
         <div className="batch-expanded">
@@ -1541,6 +1890,7 @@ function DailyBatchCard({
               onEdit={(field, newText) => onEditField(lead.id, field, newText)}
               editingDraft={editingDraft}
               setEditingDraft={setEditingDraft}
+              onItemFeedback={onItemFeedback}
             />
           ))}
         </div>
@@ -1557,7 +1907,7 @@ function DailyBatchCard({
 // 4 pre-generated messages with char counts (green if under limit).
 // Click any message to inline-edit; saves on blur/cmd+enter.
 // ═══════════════════════════════════════════════════════════════════
-function BatchLeadCard({ lead, index, total, onSend, onSkip, onEdit, editingDraft, setEditingDraft }) {
+function BatchLeadCard({ lead, index, total, onSend, onSkip, onEdit, editingDraft, setEditingDraft, onItemFeedback }) {
   // why_reasons is now clean newline-separated bullets (server-side parsed
   // from raw Signal text via buildLeadBrief → briefToUiBullets).
   // Fall back to splitting on " · " for legacy records.
@@ -1647,6 +1997,29 @@ function BatchLeadCard({ lead, index, total, onSend, onSkip, onEdit, editingDraf
                 <span className="batch-msg-meta">
                   <span className={overLimit ? "char-over" : "char-ok"}>{text.length} chars</span>
                   <span className="batch-msg-sent"> · {sentLabel}</span>
+                  {/* item 2: visible edit affordance so it's obvious the
+                      field is editable (was click-to-edit but undiscoverable) */}
+                  {!isEditing && (
+                    <button
+                      className="batch-msg-affordance"
+                      onClick={() => setEditingDraft({ recordId: lead.id, field: airtableField, text })}
+                      title="Edit this message"
+                      type="button"
+                    >✎ edit</button>
+                  )}
+                  {/* item 4: per-item feedback → focuses chat on this lead
+                      and prefills a feedback scaffold (trains future output) */}
+                  {onItemFeedback && (
+                    <button
+                      className="batch-msg-affordance"
+                      onClick={() => onItemFeedback(
+                        { lead_name: lead.lead_name, company: lead.company, lead_title: lead.title },
+                        label
+                      )}
+                      title="Give feedback on this message to train future output"
+                      type="button"
+                    >💬 feedback</button>
+                  )}
                 </span>
               </div>
               {isEditing ? (

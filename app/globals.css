@@ -808,6 +808,185 @@ body { position: relative; }
 }
 .batch-lead-ctas .btn { font-size: 12px; padding: 6px 12px; }
 
+/* ─── item 5: compact collapsed daily-batch entry ─── */
+.batch-compact {
+  width: 100%;
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  background: var(--bg-warm);
+  border: 1px solid var(--line);
+  border-left: 3px solid var(--acc);
+  border-radius: 12px;
+  padding: 12px 16px;
+  margin-bottom: 24px;
+  cursor: pointer;
+  font-family: inherit;
+  font-size: 13px;
+  color: var(--t2);
+  text-align: left;
+  transition: background 0.15s;
+}
+.batch-compact:hover { background: var(--surface); }
+.batch-compact-icon { font-size: 16px; line-height: 1; }
+.batch-compact-text { flex: 1; }
+.batch-compact-text strong { color: var(--t1); }
+.batch-compact-cta { color: var(--acc-deep); font-weight: 600; font-size: 12px; }
+
+/* ─── item 3/5: collapse button + demoted review toggle ─── */
+.batch-collapse-btn {
+  border: none;
+  background: var(--bg-warm);
+  color: var(--t2);
+  border-radius: 6px;
+  width: 24px;
+  height: 24px;
+  cursor: pointer;
+  font-size: 10px;
+  flex-shrink: 0;
+}
+.batch-collapse-btn:hover { background: var(--bg); color: var(--t1); }
+.batch-review-toggle {
+  background: transparent;
+  border: none;
+  color: var(--acc);
+  font-size: 12px;
+  font-weight: 500;
+  cursor: pointer;
+  padding: 8px 0 0;
+  font-family: inherit;
+  text-decoration: underline;
+  align-self: flex-start;
+}
+.batch-review-toggle:hover { color: var(--acc-deep); }
+
+/* ─── item 2/4: per-message edit + feedback affordances ─── */
+.batch-msg-affordance {
+  border: none;
+  background: transparent;
+  color: var(--acc);
+  font-size: 10.5px;
+  font-weight: 500;
+  cursor: pointer;
+  font-family: inherit;
+  padding: 0 0 0 8px;
+  text-decoration: underline;
+}
+.batch-msg-affordance:hover { color: var(--acc-deep); }
+
+/* ═══════════════════════════════════════════════════════════════════
+   LINKEDIN COMMENT CARD (item 1)
+   Dedicated rich flow for linkedin_engagement cards. Reuses the card /
+   card-summary look; adds post bullets, angle chips, and an editable
+   comment box with a copy-to-clipboard "Comment on LinkedIn" action.
+   ═══════════════════════════════════════════════════════════════════ */
+.li-post-block {
+  margin-top: 14px;
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+}
+.li-post-bullets {
+  margin: 2px 0 0;
+  padding-left: 18px;
+  display: flex;
+  flex-direction: column;
+  gap: 3px;
+}
+.li-post-bullets li {
+  font-size: 12.5px;
+  color: var(--t2);
+  line-height: 1.5;
+}
+.li-post-error {
+  font-size: 12.5px;
+  color: var(--t2);
+  font-style: italic;
+}
+.li-view-post {
+  align-self: flex-start;
+  color: var(--acc-deep);
+  text-decoration: none;
+  font-size: 12px;
+  font-weight: 500;
+  opacity: 0.9;
+}
+.li-view-post:hover { opacity: 1; }
+
+.li-angles { margin-top: 16px; }
+.li-angles-label {
+  font-size: 11px;
+  color: var(--t2);
+  margin-bottom: 8px;
+  font-weight: 500;
+}
+.li-angles-row {
+  display: flex;
+  gap: 8px;
+  flex-wrap: wrap;
+}
+.li-angle-chip {
+  border: 1px solid var(--line);
+  background: var(--surface);
+  box-shadow: var(--neu-shadow-tight);
+  color: var(--t1);
+  border-radius: 9px;
+  padding: 8px 12px;
+  font-size: 12px;
+  font-weight: 500;
+  cursor: pointer;
+  font-family: inherit;
+  transition: all 0.15s ease;
+}
+.li-angle-chip:hover { color: var(--acc-deep); }
+.li-angle-chip:disabled { opacity: 0.4; cursor: not-allowed; }
+.li-angle-chip-active {
+  border-color: var(--acc);
+  color: var(--acc-deep);
+  background: var(--bg-warm);
+  font-weight: 600;
+}
+
+.li-comment-block {
+  margin-top: 16px;
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+}
+.li-comment-hdr {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+}
+.li-comment-label {
+  font-size: 10.5px;
+  font-weight: 600;
+  color: var(--t1);
+  text-transform: uppercase;
+  letter-spacing: 0.06em;
+  font-family: 'JetBrains Mono', ui-monospace, monospace;
+}
+.li-comment-meta { font-size: 10.5px; color: var(--t3); }
+.li-comment-edit {
+  width: 100%;
+  box-sizing: border-box;
+  background: #FFFFFF;
+  border: 1px solid var(--acc);
+  color: var(--t1);
+  font-size: 13px;
+  line-height: 1.55;
+  font-family: inherit;
+  padding: 10px 12px;
+  border-radius: 8px;
+  resize: vertical;
+}
+.li-comment-edit:focus { outline: none; border-color: var(--acc-deep); box-shadow: 0 0 0 3px rgba(123, 159, 232, 0.12); }
+.li-comment-row {
+  display: flex;
+  gap: 8px;
+  flex-wrap: wrap;
+}
+
 /* ═══════════════════════════════════════════════════════════════════
    TOP CALLABLE CARD — server-curated, with why-now reasons
    ═══════════════════════════════════════════════════════════════════ */
