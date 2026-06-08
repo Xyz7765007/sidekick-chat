@@ -150,11 +150,18 @@ function FeedbackCapture({ itemType, leadName, leadCompany, onSubmitted, childre
     setPill({ x, y, span: text });
   }, [open]);
 
-  // Wire selection detection at the document level so it fires on TOUCH too:
-  //   - `selectionchange` (debounced) is the only event that reliably fires on
-  //     mobile text selection; mouseup/keyup don't fire for touch drags.
-  //   - mouseup/keyup keep the desktop path snappy.
-  //   - touchend catches the end of a touch selection drag.
+  // Wire selection detection. PERF (listener fan-out fix): the auto-batch view
+  // mounts ~20 FeedbackCapture instances, so every document-level listener runs
+  // its callback ~20× per event on the mobile hot path. To cut that churn
+  // WITHOUT changing behavior:
+  //   - mouseup/keyup/touchend (the snappy desktop + touch-end-drag paths) are
+  //     scoped to THIS wrapper element (wrapRef), not document. A selection that
+  //     matters to this instance starts inside its own subtree, so the wrapper
+  //     captures these just as well — but only this instance's handler fires.
+  //   - `selectionchange` MUST stay document-level (it doesn't bubble and is the
+  //     only event mobile text selection reliably fires). It's debounced ~150ms,
+  //     and captureSelection cheaply no-ops for non-matching instances via the
+  //     `root.contains(...)` scope checks before doing any real work.
   useEffect(() => {
     let t = null;
     function onSelectionChange() {
@@ -162,6 +169,12 @@ function FeedbackCapture({ itemType, leadName, leadCompany, onSubmitted, childre
       t = setTimeout(() => { t = null; captureSelection(); }, 150);
     }
     function onImmediate() { captureSelection(); }
+    // mouseup/keyup/touchend are LOW-frequency (once per release/keypress), and
+    // captureSelection cheaply no-ops for non-matching instances via root.contains.
+    // Keep them document-level so a drag that STARTS in this wrapper but RELEASES
+    // outside it (mouseup fires on another element) is still captured immediately
+    // — the earlier wrapper-scoped version lost that snappiness. The genuinely
+    // high-frequency event (selectionchange) is the one that's debounced.
     document.addEventListener("selectionchange", onSelectionChange);
     document.addEventListener("mouseup", onImmediate);
     document.addEventListener("keyup", onImmediate);
@@ -245,11 +258,13 @@ function FeedbackCapture({ itemType, leadName, leadCompany, onSubmitted, childre
       const d = await r.json().catch(() => ({}));
       setSaving(false);
       closePopover();
-      onSubmitted?.(itemType, d?.ok !== false);
+      // Forward needsSetup (412: feedback table not created upstream) so the
+      // parent can show a specific "ping admin" toast instead of a generic one.
+      onSubmitted?.(itemType, d?.ok !== false, { needsSetup: !!d?.needsSetup });
     } catch {
       setSaving(false);
       closePopover();
-      onSubmitted?.(itemType, false);
+      onSubmitted?.(itemType, false, {});
     }
   }
 
@@ -1110,9 +1125,13 @@ export default function SideKick() {
   // a successful POST /api/feedback. For comment feedback we refresh the
   // session comment-prefs cache so the very next comment generation
   // applies it. The toast confirms the loop is closed.
-  function handleFeedbackSubmitted(itemType, ok) {
+  function handleFeedbackSubmitted(itemType, ok, meta) {
     if (ok === false) {
-      showToast("Couldn't save feedback — try again");
+      if (meta?.needsSetup) {
+        showToast("Feedback store not set up yet — ping admin");
+      } else {
+        showToast("Couldn't save feedback — try again");
+      }
       return;
     }
     if (itemType === "comment") refreshCommentPrefs();
