@@ -57,12 +57,23 @@ function fallbackCopy(text, done) {
 // capture→store path that replaces the old dead-end (prefill-chat) flow.
 //
 // Selection extraction (native DOM only, no deps):
-//   - <textarea>: window.getSelection() does NOT see text inside a
-//     textarea. We read el.selectionStart/selectionEnd on select/mouseup/
-//     keyup and slice el.value. Pill is positioned from the textarea's
+//   - <textarea/input>: window.getSelection() does NOT see text inside these.
+//     We read selectionStart/selectionEnd off document.activeElement (scoped to
+//     this wrapper) and slice its value. Pill is positioned from the field's
 //     bounding rect (caret coords aren't reliable cross-browser).
 //   - rendered (non-textarea) text: window.getSelection() +
 //     getRangeAt(0).getBoundingClientRect() to position the pill.
+//
+// Events (desktop AND touch): mobile text selection does NOT fire mouseup/keyup,
+// and onSelect on a div is unreliable, so we listen at the DOCUMENT level for
+// `selectionchange` (debounced ~150ms) — the only event mobile fires — plus
+// mouseup/keyup/touchend for snappy desktop. The selected span is STORED IN
+// STATE the moment it's detected, so the affordance survives the selection
+// being collapsed when the operator taps the control (a touch quirk).
+//
+// Affordance: floating pill at the selection rect on desktop; a fixed docked
+// bar (bottom-center) on coarse-pointer / narrow viewports so the OS's native
+// selection toolbar (Copy/Share) can't cover it. Both open the same popover.
 //
 // Props:
 //   itemType      "comment" | "connection_note" | "dm"  (required)
@@ -72,35 +83,56 @@ function fallbackCopy(text, done) {
 // ═══════════════════════════════════════════════════════════════════
 function FeedbackCapture({ itemType, leadName, leadCompany, onSubmitted, children }) {
   const wrapRef = useRef(null);
+  const pillRef = useRef(null);   // the floating pill button (desktop)
+  const dockRef = useRef(null);   // the docked bar button (mobile)
   // pill = { x, y, span } in viewport coords; popover open state separate.
+  // `span` is stored as soon as a selection is detected, so the affordance no
+  // longer depends on the selection still being alive when the operator taps
+  // it (on touch, tapping the control collapses the native selection first).
   const [pill, setPill] = useState(null);
   const [open, setOpen] = useState(false);
   const [span, setSpan] = useState("");
   const [note, setNote] = useState("");
   const [saving, setSaving] = useState(false);
 
-  // Read the current selection inside this wrapper and (if non-empty)
-  // place the pill. Handles both textarea and rendered text.
-  function captureSelection(e) {
+  // Coarse pointer / narrow viewport → dock the control as a fixed bottom bar
+  // so the OS's native selection toolbar (Copy/Share) can't cover it. Desktop
+  // keeps the floating pill at the selection rect. Computed on mount + resize.
+  const [docked, setDocked] = useState(false);
+  useEffect(() => {
+    function compute() {
+      let coarse = false;
+      try { coarse = !!window.matchMedia && window.matchMedia("(pointer: coarse)").matches; } catch {}
+      setDocked(coarse || window.innerWidth <= 640);
+    }
+    compute();
+    window.addEventListener("resize", compute);
+    return () => window.removeEventListener("resize", compute);
+  }, []);
+
+  // Read the current selection inside this wrapper and (if non-empty) store the
+  // span + (for desktop) the pill coords. Handles both textarea/input and
+  // rendered text. Works without an event (selectionchange has no useful
+  // target), reading document.activeElement for the field path.
+  const captureSelection = useCallback(() => {
     if (open) return; // don't move the pill while the popover is up
     const root = wrapRef.current;
     if (!root) return;
 
-    const target = e?.target;
-    // ── textarea / input path ──
-    if (target && (target.tagName === "TEXTAREA" || target.tagName === "INPUT")) {
-      const start = target.selectionStart;
-      const end = target.selectionEnd;
+    // ── textarea / input path ── (window.getSelection can't see inside these)
+    const ae = document.activeElement;
+    if (ae && (ae.tagName === "TEXTAREA" || ae.tagName === "INPUT") && root.contains(ae)) {
+      const start = ae.selectionStart;
+      const end = ae.selectionEnd;
       if (typeof start === "number" && typeof end === "number" && end > start) {
-        const selected = String(target.value).slice(start, end).trim();
+        const selected = String(ae.value).slice(start, end).trim();
         if (selected) {
-          const r = target.getBoundingClientRect();
+          const r = ae.getBoundingClientRect();
           setPill({ x: r.left + Math.min(r.width / 2, 120), y: Math.max(8, r.top - 8), span: selected });
           return;
         }
       }
-      setPill(null);
-      return;
+      // active field but nothing selected — fall through to rendered-text check
     }
 
     // ── rendered (non-textarea) text path ──
@@ -111,25 +143,80 @@ function FeedbackCapture({ itemType, leadName, leadCompany, onSubmitted, childre
     // Only react if the selection is inside this wrapper.
     const anchor = sel.anchorNode;
     if (anchor && !root.contains(anchor)) { setPill(null); return; }
-    const rect = sel.getRangeAt(0).getBoundingClientRect();
-    setPill({ x: rect.left + Math.min(rect.width / 2, 120), y: Math.max(8, rect.top - 8), span: text });
-  }
+    let rect;
+    try { rect = sel.getRangeAt(0).getBoundingClientRect(); } catch { rect = null; }
+    const x = rect ? rect.left + Math.min(rect.width / 2, 120) : 40;
+    const y = rect ? Math.max(8, rect.top - 8) : 40;
+    setPill({ x, y, span: text });
+  }, [open]);
 
-  // Dismiss the pill/popover when the operator clicks anywhere outside this
-  // wrapper (the pill + popover render inside it, so inside-clicks are safe).
+  // Wire selection detection at the document level so it fires on TOUCH too:
+  //   - `selectionchange` (debounced) is the only event that reliably fires on
+  //     mobile text selection; mouseup/keyup don't fire for touch drags.
+  //   - mouseup/keyup keep the desktop path snappy.
+  //   - touchend catches the end of a touch selection drag.
+  useEffect(() => {
+    let t = null;
+    function onSelectionChange() {
+      if (t) clearTimeout(t);
+      t = setTimeout(() => { t = null; captureSelection(); }, 150);
+    }
+    function onImmediate() { captureSelection(); }
+    document.addEventListener("selectionchange", onSelectionChange);
+    document.addEventListener("mouseup", onImmediate);
+    document.addEventListener("keyup", onImmediate);
+    document.addEventListener("touchend", onImmediate);
+    return () => {
+      if (t) clearTimeout(t);
+      document.removeEventListener("selectionchange", onSelectionChange);
+      document.removeEventListener("mouseup", onImmediate);
+      document.removeEventListener("keyup", onImmediate);
+      document.removeEventListener("touchend", onImmediate);
+    };
+  }, [captureSelection]);
+
+  // Dismiss the pill/popover on a press outside this wrapper AND outside the
+  // control itself (the docked bar is fixed-positioned, so it isn't a DOM
+  // descendant of the wrapper — must be excluded explicitly). Listen for both
+  // mousedown (desktop) and touchstart (mobile).
   useEffect(() => {
     if (!pill && !open) return;
     function onDocDown(e) {
       const root = wrapRef.current;
-      if (root && !root.contains(e.target)) { setOpen(false); setPill(null); }
+      const inWrap = root && root.contains(e.target);
+      const inPill = pillRef.current && pillRef.current.contains(e.target);
+      const inDock = dockRef.current && dockRef.current.contains(e.target);
+      if (!inWrap && !inPill && !inDock) { setOpen(false); setPill(null); }
     }
     document.addEventListener("mousedown", onDocDown);
-    return () => document.removeEventListener("mousedown", onDocDown);
+    document.addEventListener("touchstart", onDocDown, { passive: true });
+    return () => {
+      document.removeEventListener("mousedown", onDocDown);
+      document.removeEventListener("touchstart", onDocDown);
+    };
+  }, [pill, open]);
+
+  // When the native selection collapses (and the popover isn't open), drop the
+  // stored affordance so a stale control doesn't linger after a tap-elsewhere.
+  useEffect(() => {
+    if (!pill || open) return;
+    function onSelChange() {
+      const ae = document.activeElement;
+      const root = wrapRef.current;
+      // A focused field inside the wrapper may keep its own selection — leave it.
+      if (ae && (ae.tagName === "TEXTAREA" || ae.tagName === "INPUT") && root && root.contains(ae)) {
+        if (ae.selectionEnd > ae.selectionStart) return;
+      }
+      const sel = window.getSelection ? window.getSelection() : null;
+      if (!sel || sel.isCollapsed) setPill(null);
+    }
+    document.addEventListener("selectionchange", onSelChange);
+    return () => document.removeEventListener("selectionchange", onSelChange);
   }, [pill, open]);
 
   function openPopover() {
-    if (!pill) return;
-    setSpan(pill.span);
+    if (!pill?.span) return;
+    setSpan(pill.span); // use the STORED span — selection may already be gone
     setNote("");
     setOpen(true);
   }
@@ -166,19 +253,24 @@ function FeedbackCapture({ itemType, leadName, leadCompany, onSubmitted, childre
     }
   }
 
+  // Where the popover anchors: at the selection rect on desktop, centered just
+  // above the docked bar on mobile (so it clears the native selection toolbar).
+  const popStyle = docked
+    ? { left: "50%", bottom: 64, top: "auto" }
+    : { left: pill?.x ?? 40, top: (pill?.y ?? 40) + 8 };
+
   return (
     <div
       ref={wrapRef}
       className="fb-capture"
-      onMouseUp={captureSelection}
-      onKeyUp={captureSelection}
-      onSelect={captureSelection}
     >
       {children}
 
-      {pill && !open && (
+      {/* Desktop: floating pill at the selection rect. */}
+      {pill && !open && !docked && (
         <button
           type="button"
+          ref={pillRef}
           className="fb-pill"
           style={{ left: pill.x, top: pill.y }}
           onMouseDown={(e) => e.preventDefault() /* keep the selection alive */}
@@ -189,8 +281,25 @@ function FeedbackCapture({ itemType, leadName, leadCompany, onSubmitted, childre
         </button>
       )}
 
+      {/* Mobile: fixed docked bar above the chat input — not covered by the
+          OS selection toolbar, and tappable even after the selection clears
+          (the span is already stored in state). */}
+      {pill && !open && docked && (
+        <div className="fb-dock" ref={dockRef}>
+          <button
+            type="button"
+            className="fb-dock-btn"
+            onMouseDown={(e) => e.preventDefault()}
+            onClick={openPopover}
+            title="Give feedback on the highlighted text"
+          >
+            💬 Feedback on selection
+          </button>
+        </div>
+      )}
+
       {open && (
-        <div className="fb-pop" style={{ left: pill?.x ?? 40, top: (pill?.y ?? 40) + 8 }}>
+        <div className={`fb-pop${docked ? " fb-pop-docked" : ""}`} style={popStyle}>
           <div className="fb-pop-label">Feedback on:</div>
           <div className="fb-pop-span" title={span}>{span.slice(0, 280)}</div>
           <textarea

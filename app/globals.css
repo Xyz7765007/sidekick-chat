@@ -1618,5 +1618,39 @@ body { position: relative; }
 .fb-pop-row { display: flex; justify-content: flex-end; gap: 8px; margin-top: 8px; }
 .fb-pop-row .btn { font-size: 12px; padding: 6px 12px; }
 
+/* Mobile docked bar: the native selection toolbar covers a pill at the
+   selection rect, so on coarse-pointer / narrow viewports we dock the Feedback
+   control to the bottom-center of the viewport (above the chat input). The span
+   is stored in state, so tapping it works even after the selection collapses. */
+.fb-dock {
+  position: fixed;
+  left: 0;
+  right: 0;
+  bottom: calc(12px + env(safe-area-inset-bottom, 0px));
+  z-index: 62;
+  display: flex;
+  justify-content: center;
+  pointer-events: none; /* let taps pass through the empty gutter */
+}
+.fb-dock-btn {
+  pointer-events: auto;
+  border: none;
+  background: var(--t1);
+  color: var(--bg-warm);
+  font-family: inherit;
+  font-size: 14px;
+  font-weight: 600;
+  padding: 12px 20px;
+  border-radius: 999px;
+  cursor: pointer;
+  box-shadow: var(--neu-shadow);
+  white-space: nowrap;
+}
+.fb-dock-btn:active { background: var(--acc-deep); }
+
+/* Docked popover: centered horizontally, anchored just above the docked bar
+   (overrides the rect-anchored top from .fb-pop). */
+.fb-pop-docked { transform: translateX(-50%); }
+
 /* Hint shown in the batch message header (matches existing affordances). */
 .batch-msg-fbhint { cursor: default; text-decoration: none; opacity: 0.85; }
