@@ -86,6 +86,7 @@ function FeedbackCapture({ itemType, leadName, leadCompany, onSubmitted, childre
   const wrapRef = useRef(null);
   const pillRef = useRef(null);   // the floating pill button (desktop)
   const dockRef = useRef(null);   // the docked bar button (mobile)
+  const popRef = useRef(null);    // the feedback popover (portaled to body)
   // Pointer coords (clientX/clientY) from the LAST mouseup/touchend that ended
   // a drag inside this wrapper. The pill anchors here so it appears right where
   // the operator released the drag — not at the field's bounding-box edge (the
@@ -275,7 +276,11 @@ function FeedbackCapture({ itemType, leadName, leadCompany, onSubmitted, childre
       const inWrap = root && root.contains(e.target);
       const inPill = pillRef.current && pillRef.current.contains(e.target);
       const inDock = dockRef.current && dockRef.current.contains(e.target);
-      if (!inWrap && !inPill && !inDock) { setOpen(false); setPill(null); }
+      // The popover is portaled to <body> (outside `root`), so clicks inside it
+      // are NOT caught by inWrap. Without this guard, clicking into the popover's
+      // textarea or Submit button dismisses the popover before you can use it.
+      const inPop = popRef.current && popRef.current.contains(e.target);
+      if (!inWrap && !inPill && !inDock && !inPop) { setOpen(false); setPill(null); }
     }
     document.addEventListener("mousedown", onDocDown);
     document.addEventListener("touchstart", onDocDown, { passive: true });
@@ -392,7 +397,7 @@ function FeedbackCapture({ itemType, leadName, leadCompany, onSubmitted, childre
       )}
 
       {open && (
-        <div className={`fb-pop${docked ? " fb-pop-docked" : ""}`} style={popStyle}>
+        <div ref={popRef} className={`fb-pop${docked ? " fb-pop-docked" : ""}`} style={popStyle}>
           <div className="fb-pop-label">Feedback on:</div>
           <div className="fb-pop-span" title={span}>{span.slice(0, 280)}</div>
           <textarea
