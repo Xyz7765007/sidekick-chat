@@ -1452,3 +1452,171 @@ body { position: relative; }
   justify-content: flex-end;
   margin-top: 4px;
 }
+
+/* ═══════════════════════════════════════════════════════════════════
+   CARD ERGONOMICS — keyboard hint, touch swipe, responsive (2026-06-08)
+   ═══════════════════════════════════════════════════════════════════ */
+
+/* Keyboard hint — subtle, desktop only. Hidden on coarse pointers
+   (touch) since the keys don't apply there. */
+.card-kbd-hint {
+  margin-top: 12px;
+  font-size: 10px;
+  color: var(--t3);
+  font-family: 'JetBrains Mono', ui-monospace, monospace;
+  letter-spacing: 0.02em;
+  text-align: right;
+  user-select: none;
+}
+@media (hover: none), (pointer: coarse) {
+  .card-kbd-hint { display: none; }
+}
+
+/* Swipe wrapper around the focused top card. The card inside keeps its
+   own styling; this layer just carries the drag transform + affordances. */
+.swipe-card {
+  position: relative;
+  touch-action: pan-y;            /* let vertical scroll through; we own horizontal */
+  transition: transform 0.28s cubic-bezier(0.2, 0.7, 0.3, 1);
+  will-change: transform;
+}
+.swipe-card.swipe-dragging {
+  transition: none;               /* follow the finger 1:1 while dragging */
+}
+.swipe-card.swipe-flying {
+  transition: transform 0.22s ease-in;
+  opacity: 0;
+  pointer-events: none;
+}
+.swipe-hint {
+  position: absolute;
+  top: 18px;
+  z-index: 3;
+  padding: 6px 12px;
+  border-radius: 9px;
+  font-size: 12px;
+  font-weight: 600;
+  font-family: 'JetBrains Mono', ui-monospace, monospace;
+  opacity: 0;
+  transition: opacity 0.12s ease;
+  pointer-events: none;
+}
+.swipe-hint.show { opacity: 1; }
+.swipe-hint-done {
+  left: 18px;
+  background: rgba(91, 168, 142, 0.16);
+  color: var(--pos);
+  border: 1px solid rgba(91, 168, 142, 0.35);
+}
+.swipe-hint-skip {
+  right: 18px;
+  background: rgba(196, 107, 107, 0.16);
+  color: var(--danger);
+  border: 1px solid rgba(196, 107, 107, 0.35);
+}
+
+/* ── Phone responsive (additive — desktop untouched) ─────────────── */
+@media (max-width: 430px) {
+  .app { padding: 16px 12px 120px; }
+
+  /* Header stacks so the regenerate button + counter don't crowd out
+     the brand on narrow screens. */
+  .hdr {
+    flex-wrap: wrap;
+    gap: 12px;
+    margin-bottom: 16px;
+  }
+  .hdr-r {
+    flex-wrap: wrap;
+    gap: 10px;
+    width: 100%;
+    justify-content: space-between;
+  }
+
+  .card-stack { padding: 16px 16px 14px; }
+  .card-name { font-size: 17px; }
+
+  /* Angle chips wrap cleanly + fill width for easy thumb tapping. */
+  .li-angles-row { gap: 6px; }
+  .li-angle-chip { flex: 1 1 auto; text-align: center; }
+
+  /* Batch padding scales down with the card. */
+  .batch-compact { padding: 12px 14px; }
+
+  /* Queue indicator stays readable. */
+  .queue-indicator { padding: 12px 14px; }
+  .queue-breakdown { gap: 6px; }
+
+  /* Chat input stays full-width and thumb-reachable. */
+  .chat-input-wrap { padding-left: 12px; padding-right: 12px; }
+}
+
+/* ═══════════════════════════════════════════════════════════════════
+   HIGHLIGHT-TO-FEEDBACK (FeedbackCapture)
+   Floating pill near a text selection + a small popover to capture a
+   note. Closes the feedback loop. Native DOM only — no libs.
+   ═══════════════════════════════════════════════════════════════════ */
+.fb-capture { position: relative; }
+
+/* Pill: fixed-positioned to the viewport (coords come from the selection
+   rect / textarea rect), centered on its x, sitting just above the y. */
+.fb-pill {
+  position: fixed;
+  transform: translateX(-50%) translateY(-100%);
+  z-index: 60;
+  border: none;
+  background: var(--t1);
+  color: var(--bg-warm);
+  font-family: inherit;
+  font-size: 12px;
+  font-weight: 600;
+  padding: 6px 10px;
+  border-radius: 8px;
+  cursor: pointer;
+  box-shadow: var(--neu-shadow-tight);
+  white-space: nowrap;
+}
+.fb-pill:hover { background: var(--acc-deep); }
+
+/* Popover: small card anchored near the selection. */
+.fb-pop {
+  position: fixed;
+  transform: translateX(-50%);
+  z-index: 61;
+  width: min(320px, 88vw);
+  background: var(--surface);
+  border: 1px solid var(--line);
+  border-radius: 12px;
+  padding: 12px;
+  box-shadow: var(--neu-shadow);
+}
+.fb-pop-label { font-size: 11px; color: var(--t3); font-weight: 600; margin-bottom: 4px; }
+.fb-pop-span {
+  font-size: 12px;
+  color: var(--t2);
+  background: var(--bg-warm);
+  border-radius: 8px;
+  padding: 6px 8px;
+  margin-bottom: 8px;
+  max-height: 64px;
+  overflow: auto;
+  white-space: pre-wrap;
+  word-break: break-word;
+}
+.fb-pop-note {
+  width: 100%;
+  font-family: inherit;
+  font-size: 13px;
+  color: var(--t1);
+  background: var(--bg-warm);
+  border: 1px solid var(--line);
+  border-radius: 8px;
+  padding: 8px;
+  resize: vertical;
+  box-sizing: border-box;
+}
+.fb-pop-row { display: flex; justify-content: flex-end; gap: 8px; margin-top: 8px; }
+.fb-pop-row .btn { font-size: 12px; padding: 6px 12px; }
+
+/* Hint shown in the batch message header (matches existing affordances). */
+.batch-msg-fbhint { cursor: default; text-decoration: none; opacity: 0.85; }

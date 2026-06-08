@@ -25,6 +25,29 @@ const ANTHROPIC_API_KEY = process.env.ANTHROPIC_API_KEY;
 const SUMMARY_MODEL = process.env.SUMMARY_MODEL || "claude-haiku-4-5-20251001";
 
 const POST_TEXT_CAP = 2000;
+const FEEDBACK_BLOCK_CHAR_CAP = 1500;
+
+// Bounded "OPERATOR FEEDBACK" block from learned comment prefs. Same
+// builder shape as generate-comment. Style guidance only — never lets a
+// pref reintroduce internal scoring or rule names.
+function buildFeedbackBlock(feedback) {
+  if (!Array.isArray(feedback) || !feedback.length) return "";
+  const lines = [];
+  let used = 0;
+  for (const p of feedback) {
+    const note = String(p?.feedback_text || "").replace(/\s+/g, " ").trim();
+    if (!note) continue;
+    const span = String(p?.quoted_span || "").replace(/\s+/g, " ").trim();
+    const line = span
+      ? `- on "${span.slice(0, 120)}": ${note.slice(0, 240)}`
+      : `- ${note.slice(0, 240)}`;
+    if (used + line.length + 1 > FEEDBACK_BLOCK_CHAR_CAP) break;
+    lines.push(line);
+    used += line.length + 1;
+  }
+  if (!lines.length) return "";
+  return `OPERATOR FEEDBACK — past preferences on comments (bias the angles toward these, most recent first):\n${lines.join("\n")}`;
+}
 
 const SYSTEM_PROMPT = `You help a B2B operator decide how to comment on a LinkedIn post so the comment starts a real conversation (not empty praise).
 
@@ -76,11 +99,13 @@ export async function POST(request) {
     return Response.json({ ok: false, error: "Invalid JSON" }, { status: 400 });
   }
 
-  const { lead_name, company, lead_title, signal, url } = body || {};
+  const { lead_name, company, lead_title, signal, url, feedback } = body || {};
   const postText = typeof signal === "string" ? signal.slice(0, POST_TEXT_CAP) : "";
   if (!postText && !lead_name) {
     return Response.json({ ok: false, error: "post context required" }, { status: 400 });
   }
+
+  const feedbackBlock = buildFeedbackBlock(feedback);
 
   const contextBlock = [
     lead_name ? `Author: ${lead_name}` : null,
@@ -90,6 +115,7 @@ export async function POST(request) {
     "",
     "Post content / context:",
     postText || "(no post text available — infer from author context only)",
+    feedbackBlock ? `\n${feedbackBlock}` : null,
   ].filter(Boolean).join("\n");
 
   try {

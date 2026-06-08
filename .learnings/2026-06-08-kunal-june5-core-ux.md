@@ -36,3 +36,10 @@ fetch). NOT verified live (prod ANTHROPIC/SIDEKICK keys only on Vercel).
 - Comment routes treat `signal` as post content ONLY — never echo score/rule
   names (same internal-vs-public rule that bit the email draft on 2026-06-04).
 - LI cards bypass /api/summarize to avoid paying twice for the same top card.
+
+## Live QA (post-deploy, commit 26b6849)
+Verified against https://sidekick-chat-beige.vercel.app/ with real requests + headless chromium:
+- /api/comment-angles -> {summary, 3 bullets, 3 distinct angles} 200; /api/generate-comment -> on-topic comment 200.
+- Leak guard: injected score "92/100", rule names, score_reason into signal -> NONE surfaced in generated comment. Clean.
+- Empty body -> 400 (graceful). Core proxies /api/feed, /api/count still 200 (no regression).
+- UI E2E: pick angle -> editable comment + Regenerate + Comment-on-LinkedIn (window.open + clipboard, no auto-post). Batch collapses to 1-line entry; expand shows edit + feedback affordances + Send all. No JS page errors; the lone first-load 404 was transient (favicon-type), not reproduced.

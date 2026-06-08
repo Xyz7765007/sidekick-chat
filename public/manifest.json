@@ -1,0 +1,18 @@
+{
+  "name": "Side Kick",
+  "short_name": "Side Kick",
+  "description": "Tasks that need a human — Veloka pipeline",
+  "start_url": "/",
+  "display": "standalone",
+  "orientation": "portrait",
+  "theme_color": "#7B9FE8",
+  "background_color": "#E4E0DA",
+  "icons": [
+    {
+      "src": "/icon.svg",
+      "type": "image/svg+xml",
+      "sizes": "any",
+      "purpose": "any maskable"
+    }
+  ]
+}

@@ -47,6 +47,176 @@ function fallbackCopy(text, done) {
   } catch {}
 }
 
+// ═══════════════════════════════════════════════════════════════════
+// FEEDBACK CAPTURE (highlight-to-feedback — Claude-style select-to-reply)
+//
+// Wraps any block of generated copy. When the operator highlights text
+// inside it, a small floating "💬 Feedback" pill appears near the
+// selection. Click → popover with the quoted span (read-only) + a note
+// textarea + Submit/Cancel. Submit POSTs /api/feedback. This is the REAL
+// capture→store path that replaces the old dead-end (prefill-chat) flow.
+//
+// Selection extraction (native DOM only, no deps):
+//   - <textarea>: window.getSelection() does NOT see text inside a
+//     textarea. We read el.selectionStart/selectionEnd on select/mouseup/
+//     keyup and slice el.value. Pill is positioned from the textarea's
+//     bounding rect (caret coords aren't reliable cross-browser).
+//   - rendered (non-textarea) text: window.getSelection() +
+//     getRangeAt(0).getBoundingClientRect() to position the pill.
+//
+// Props:
+//   itemType      "comment" | "connection_note" | "dm"  (required)
+//   leadName, leadCompany   for the stored record (optional)
+//   onSubmitted   (item_type) => void   — fires after a successful save
+//                 (parent shows a toast + refreshes comment prefs)
+// ═══════════════════════════════════════════════════════════════════
+function FeedbackCapture({ itemType, leadName, leadCompany, onSubmitted, children }) {
+  const wrapRef = useRef(null);
+  // pill = { x, y, span } in viewport coords; popover open state separate.
+  const [pill, setPill] = useState(null);
+  const [open, setOpen] = useState(false);
+  const [span, setSpan] = useState("");
+  const [note, setNote] = useState("");
+  const [saving, setSaving] = useState(false);
+
+  // Read the current selection inside this wrapper and (if non-empty)
+  // place the pill. Handles both textarea and rendered text.
+  function captureSelection(e) {
+    if (open) return; // don't move the pill while the popover is up
+    const root = wrapRef.current;
+    if (!root) return;
+
+    const target = e?.target;
+    // ── textarea / input path ──
+    if (target && (target.tagName === "TEXTAREA" || target.tagName === "INPUT")) {
+      const start = target.selectionStart;
+      const end = target.selectionEnd;
+      if (typeof start === "number" && typeof end === "number" && end > start) {
+        const selected = String(target.value).slice(start, end).trim();
+        if (selected) {
+          const r = target.getBoundingClientRect();
+          setPill({ x: r.left + Math.min(r.width / 2, 120), y: Math.max(8, r.top - 8), span: selected });
+          return;
+        }
+      }
+      setPill(null);
+      return;
+    }
+
+    // ── rendered (non-textarea) text path ──
+    const sel = window.getSelection ? window.getSelection() : null;
+    if (!sel || sel.isCollapsed || !sel.rangeCount) { setPill(null); return; }
+    const text = sel.toString().trim();
+    if (!text) { setPill(null); return; }
+    // Only react if the selection is inside this wrapper.
+    const anchor = sel.anchorNode;
+    if (anchor && !root.contains(anchor)) { setPill(null); return; }
+    const rect = sel.getRangeAt(0).getBoundingClientRect();
+    setPill({ x: rect.left + Math.min(rect.width / 2, 120), y: Math.max(8, rect.top - 8), span: text });
+  }
+
+  // Dismiss the pill/popover when the operator clicks anywhere outside this
+  // wrapper (the pill + popover render inside it, so inside-clicks are safe).
+  useEffect(() => {
+    if (!pill && !open) return;
+    function onDocDown(e) {
+      const root = wrapRef.current;
+      if (root && !root.contains(e.target)) { setOpen(false); setPill(null); }
+    }
+    document.addEventListener("mousedown", onDocDown);
+    return () => document.removeEventListener("mousedown", onDocDown);
+  }, [pill, open]);
+
+  function openPopover() {
+    if (!pill) return;
+    setSpan(pill.span);
+    setNote("");
+    setOpen(true);
+  }
+  function closePopover() {
+    setOpen(false);
+    setPill(null);
+    setNote("");
+  }
+
+  async function submit() {
+    const fb = note.trim();
+    if (!fb) return;
+    setSaving(true);
+    try {
+      const r = await fetch("/api/feedback", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          item_type: itemType,
+          quoted_span: span,
+          feedback_text: fb,
+          lead_name: leadName,
+          lead_company: leadCompany,
+        }),
+      });
+      const d = await r.json().catch(() => ({}));
+      setSaving(false);
+      closePopover();
+      onSubmitted?.(itemType, d?.ok !== false);
+    } catch {
+      setSaving(false);
+      closePopover();
+      onSubmitted?.(itemType, false);
+    }
+  }
+
+  return (
+    <div
+      ref={wrapRef}
+      className="fb-capture"
+      onMouseUp={captureSelection}
+      onKeyUp={captureSelection}
+      onSelect={captureSelection}
+    >
+      {children}
+
+      {pill && !open && (
+        <button
+          type="button"
+          className="fb-pill"
+          style={{ left: pill.x, top: pill.y }}
+          onMouseDown={(e) => e.preventDefault() /* keep the selection alive */}
+          onClick={openPopover}
+          title="Give feedback on the highlighted text"
+        >
+          💬 Feedback
+        </button>
+      )}
+
+      {open && (
+        <div className="fb-pop" style={{ left: pill?.x ?? 40, top: (pill?.y ?? 40) + 8 }}>
+          <div className="fb-pop-label">Feedback on:</div>
+          <div className="fb-pop-span" title={span}>{span.slice(0, 280)}</div>
+          <textarea
+            className="fb-pop-note"
+            placeholder="What should change? e.g. too formal, drop the question, shorter…"
+            value={note}
+            autoFocus
+            rows={3}
+            onChange={(e) => setNote(e.target.value)}
+            onKeyDown={(e) => {
+              if (e.key === "Escape") { e.preventDefault(); closePopover(); }
+              if (e.key === "Enter" && (e.metaKey || e.ctrlKey)) { e.preventDefault(); submit(); }
+            }}
+          />
+          <div className="fb-pop-row">
+            <button type="button" className="btn" onClick={closePopover} disabled={saving}>Cancel</button>
+            <button type="button" className="btn primary" onClick={submit} disabled={saving || !note.trim()}>
+              {saving ? "Saving…" : "Submit"}
+            </button>
+          </div>
+        </div>
+      )}
+    </div>
+  );
+}
+
 // ─────────────────────────────────────────────────────────────────────
 // Signal text formatter
 // Server delivers the signal as one big paragraph with emoji markers
@@ -132,6 +302,21 @@ export default function SideKick() {
   // re-render needed on change.
   const stickyTopIdRef = useRef(null);
 
+  // ─── Focused top card ref (card-ergonomics: keyboard + swipe) ───
+  // The visible top card is resolved inside the render IIFE. To let the
+  // window-level keydown handler and the touch-swipe handler act on the
+  // card CURRENTLY on screen (not a value captured at mount), we lift the
+  // resolved top card's identity into a ref and update it during render.
+  // Avoids the classic stale-closure bug: the keydown effect attaches once
+  // and always reads topCardRef.current. Shape: { id, task_type } | null.
+  const topCardRef = useRef(null);
+  // Mirror `leaving` into a ref so the once-attached keydown handler can
+  // bail when the current top card is already animating out — matching the
+  // `disabled={leaving}` re-entry guard the on-screen buttons have. Without
+  // this, holding `d`/`Enter` fires handleAction multiple times on the same id.
+  const leavingRef = useRef(leaving);
+  leavingRef.current = leaving;
+
   // AI summary cache. Keyed by card.id → string (the generated summary)
   // OR "loading" OR "error". Fetched lazily for the visible top card so
   // we don't burn tokens summarising cards the operator never sees.
@@ -148,6 +333,24 @@ export default function SideKick() {
   //   itself lives in component-local state inside LinkedInCommentCard.
   const [commentData, setCommentData] = useState({});
   const pendingCommentDataRef = useRef(new Set());
+
+  // ─── Comment-feedback prefs (closed loop) ──────────────────────
+  // Learned operator preferences for LinkedIn comments, fetched once per
+  // session from /api/preferences?item_type=comment and passed into the
+  // comment-angles + generate-comment routes so future drafts apply past
+  // corrections. Refreshed after the operator submits new comment
+  // feedback (so the next generation reflects it immediately). Held in a
+  // ref because it's read inside fetch callbacks, not rendered.
+  const commentPrefsRef = useRef([]);
+  const commentPrefsLoadedRef = useRef(false);
+  const refreshCommentPrefs = useCallback(async () => {
+    try {
+      const r = await fetch("/api/preferences?item_type=comment&limit=15", { cache: "no-store" });
+      const d = await r.json().catch(() => ({}));
+      if (d && Array.isArray(d.prefs)) commentPrefsRef.current = d.prefs;
+    } catch { /* prefs are best-effort; generation still works without them */ }
+    commentPrefsLoadedRef.current = true;
+  }, []);
 
   // Session-only dismissals for top-callable cards. These items reference
   // Lead records (not Task records), so the standard /api/action handler
@@ -402,6 +605,58 @@ export default function SideKick() {
     }
   }, [messages]);
 
+  // ─── Keyboard shortcuts for the focused top card (item A) ───────
+  // Desktop ergonomics — act on the single visible card without reaching
+  // for the mouse: Enter / D = Done, S = Skip. The 1/2/3 angle pick for a
+  // LinkedIn card is handled INSIDE LinkedInCommentCard's own effect (it's
+  // the focused card when mounted) so it can reach its angle-select state.
+  //
+  // Guards (the main bug surface):
+  //  - Ignore when typing in an input/textarea/select/contenteditable so
+  //    chat typing and draft editing are never hijacked.
+  //  - Ignore while chat is busy or the email-draft modal is open.
+  //  - Never preventDefault on Ctrl/Cmd/Alt-chorded keys (don't break
+  //    browser shortcuts).
+  //  - Read the current top card from topCardRef (kept fresh in render) so
+  //    this once-attached handler never acts on a stale card.
+  useEffect(() => {
+    const onKey = (e) => {
+      if (e.ctrlKey || e.metaKey || e.altKey) return;
+      const el = document.activeElement;
+      if (el) {
+        const tag = el.tagName;
+        if (tag === "INPUT" || tag === "TEXTAREA" || tag === "SELECT" || el.isContentEditable) return;
+      }
+      if (chatBusy || emailDraft) return;
+      const top = topCardRef.current;
+      if (!top) return;
+      // Re-entry guard: ignore if the top card is already animating out
+      // (prevents double-fire on rapid keypress / key-repeat).
+      if (leavingRef.current && leavingRef.current.has(top.id)) return;
+      const k = e.key;
+      if (k === "Enter" || k === "d" || k === "D") {
+        e.preventDefault();
+        handleAction(top.id, "done");
+      } else if (k === "s" || k === "S") {
+        e.preventDefault();
+        handleAction(top.id, "skip");
+      }
+      // 1/2/3 (angle pick) intentionally NOT handled here — owned by
+      // LinkedInCommentCard so it can wire to its angle-select handler.
+    };
+    window.addEventListener("keydown", onKey);
+    return () => window.removeEventListener("keydown", onKey);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [chatBusy, emailDraft]);
+
+  // Clear the top-card ref when the feed is empty so a keyboard shortcut
+  // can't fire Done/Skip on an already-removed card. The render IIFE clears
+  // it on its own empty path (sortedStack === 0), but it is NOT entered at
+  // all when both cards and topCallable are empty — this covers that path.
+  useEffect(() => {
+    if (cards.length === 0 && topCallable.length === 0) topCardRef.current = null;
+  }, [cards, topCallable]);
+
   // ─── Lazy AI summary fetch ──────────────────────────────────────
   // When the visible top card changes (sticky pin advanced), fire a
   // single Haiku call to /api/summarize and cache the result. The
@@ -504,6 +759,9 @@ export default function SideKick() {
     if (commentData[card.id]) return;
     if (pendingCommentDataRef.current.has(card.id)) return;
 
+    // Lazy-load learned comment prefs once per session (best-effort).
+    if (!commentPrefsLoadedRef.current) refreshCommentPrefs();
+
     pendingCommentDataRef.current.add(card.id);
     setCommentData(s => ({ ...s, [card.id]: { status: "loading" } }));
 
@@ -517,6 +775,8 @@ export default function SideKick() {
         // signal carries the post content; route caps + strips internal markers
         signal: card.signal,
         url: card.url || card.lead_linkedin || "",
+        // learned comment prefs bias the suggested angles
+        feedback: commentPrefsRef.current,
       }),
     })
       .then(r => r.json())
@@ -534,7 +794,7 @@ export default function SideKick() {
       .finally(() => {
         pendingCommentDataRef.current.delete(card.id);
       });
-  }, [commentData]);
+  }, [commentData, refreshCommentPrefs]);
 
   // ─── Toast helper ───────────────────────────────────────────────
   function showToast(msg, ms = 2400) {
@@ -734,20 +994,20 @@ export default function SideKick() {
     showToast(`Chat now focused on ${card.lead_name || "this lead"}`, 2200);
   }
 
-  // ─── Per-item feedback affordance (item 4) ──────────────────────
-  // Lightweight, frontend-only: focus chat on the lead and prefill the
-  // chat input with a feedback scaffold. The operator finishes the
-  // sentence and sends — it flows through the existing /api/chat + chat
-  // history (which is how future output gets trained). No new backend.
-  function handleItemFeedback(card, itemLabel) {
-    handleSetFocus(card);
-    const who = card.lead_name || card.company || "this lead";
-    setInput(`Feedback on the ${itemLabel} for ${who}: `);
-    // Move focus to the chat input so the operator can type immediately.
-    setTimeout(() => {
-      const el = document.querySelector(".chat-input");
-      if (el) el.focus();
-    }, 50);
+  // ─── Feedback loop: post-submit handler ─────────────────────────
+  // REPLACES the old dead-end handleItemFeedback (which only prefilled
+  // the chat box and was never read by any generator). The real
+  // capture→store path now lives in <FeedbackCapture>; this fires AFTER
+  // a successful POST /api/feedback. For comment feedback we refresh the
+  // session comment-prefs cache so the very next comment generation
+  // applies it. The toast confirms the loop is closed.
+  function handleFeedbackSubmitted(itemType, ok) {
+    if (ok === false) {
+      showToast("Couldn't save feedback — try again");
+      return;
+    }
+    if (itemType === "comment") refreshCommentPrefs();
+    showToast("Feedback saved — future drafts will use it.");
   }
 
   // ─── Email draft (pt4 V1: draft + edit + copy, NO send) ─────────
@@ -926,7 +1186,7 @@ Best,
               onEditField={(recordId, field, newText) => handleBatchAction("edit", { recordId, field, newText })}
               editingDraft={editingDraft}
               setEditingDraft={setEditingDraft}
-              onItemFeedback={handleItemFeedback}
+              onFeedbackSubmitted={handleFeedbackSubmitted}
             />
           );
         })()}
@@ -980,7 +1240,7 @@ Best,
           const filteredCards = cards.filter(c => !topCallableKeys.has(topCallableKey(c)));
           const allCards = [...topCallableCards, ...filteredCards];
 
-          if (allCards.length === 0) return null;
+          if (allCards.length === 0) { topCardRef.current = null; return null; }
 
           // Priority groups. top_callable sits just below movement
           // because phone-ready leads with high composite are the
@@ -1009,7 +1269,7 @@ Best,
             ...other.sort(byScore),
           ];
 
-          if (sortedStack.length === 0) return null;
+          if (sortedStack.length === 0) { topCardRef.current = null; return null; }
 
           // Sticky top — keep the same card visible until it's gone
           // from the feed (user actioned it OR server removed it).
@@ -1024,6 +1284,10 @@ Best,
           }
           const remaining = sortedStack.filter(c => c.id !== topCard.id);
 
+          // Keep the focused-card ref fresh so the window-level keydown +
+          // swipe handlers always act on the card actually on screen.
+          topCardRef.current = { id: topCard.id, task_type: topCard.task_type };
+
           const breakdown = {
             movements: remaining.filter(c => c.task_type === "lead_movement").length,
             callable:  remaining.filter(c => c.task_type === "top_callable").length,
@@ -1037,37 +1301,40 @@ Best,
 
           return (
             <div className="task-stack">
-              {topCard.task_type === "linkedin_engagement" ? (
-                <LinkedInCommentCard
-                  key={topCard.id}
-                  card={topCard}
-                  leaving={leaving.has(topCard.id)}
-                  subject={getSubject(topCard)}
-                  meta={getMeta(topCard)}
-                  commentData={commentData[topCard.id]}
-                  onRequestAngles={() => fetchCommentAngles(topCard)}
-                  onAction={handleAction}
-                  onSetFocus={handleSetFocus}
-                  onItemFeedback={handleItemFeedback}
-                  isFocused={topIsFocused}
-                  onCopied={(msg) => showToast(msg, 2600)}
-                />
-              ) : (
-                <Card
-                  key={topCard.id}
-                  card={topCard}
-                  leaving={leaving.has(topCard.id)}
-                  enriching={enriching.has(topCard.id)}
-                  subject={getSubject(topCard)}
-                  meta={getMeta(topCard)}
-                  summary={summaries[topCard.id]}
-                  onAction={handleAction}
-                  onEnrichPhone={handleEnrichPhone}
-                  onSetFocus={handleSetFocus}
-                  onDraftEmail={handleDraftEmail}
-                  isFocused={topIsFocused}
-                />
-              )}
+              <SwipeCard key={`swipe-${topCard.id}`} cardId={topCard.id} onAction={handleAction}>
+                {topCard.task_type === "linkedin_engagement" ? (
+                  <LinkedInCommentCard
+                    key={topCard.id}
+                    card={topCard}
+                    leaving={leaving.has(topCard.id)}
+                    subject={getSubject(topCard)}
+                    meta={getMeta(topCard)}
+                    commentData={commentData[topCard.id]}
+                    onRequestAngles={() => fetchCommentAngles(topCard)}
+                    onAction={handleAction}
+                    onSetFocus={handleSetFocus}
+                    onFeedbackSubmitted={handleFeedbackSubmitted}
+                    commentPrefs={commentPrefsRef}
+                    isFocused={topIsFocused}
+                    onCopied={(msg) => showToast(msg, 2600)}
+                  />
+                ) : (
+                  <Card
+                    key={topCard.id}
+                    card={topCard}
+                    leaving={leaving.has(topCard.id)}
+                    enriching={enriching.has(topCard.id)}
+                    subject={getSubject(topCard)}
+                    meta={getMeta(topCard)}
+                    summary={summaries[topCard.id]}
+                    onAction={handleAction}
+                    onEnrichPhone={handleEnrichPhone}
+                    onSetFocus={handleSetFocus}
+                    onDraftEmail={handleDraftEmail}
+                    isFocused={topIsFocused}
+                  />
+                )}
+              </SwipeCard>
               {remaining.length > 0 && <QueueIndicator count={remaining.length} breakdown={breakdown} />}
             </div>
           );
@@ -1146,6 +1413,120 @@ function ChatBubble({ msg }) {
     <div className={`chat-msg chat-msg-${msg.role}`}>
       {msg.role === "bot" && <div className="chat-avatar"><div className="dot" /></div>}
       <div className="chat-bubble">{msg.text}</div>
+    </div>
+  );
+}
+
+// ═══════════════════════════════════════════════════════════════════
+// SWIPE CARD WRAPPER (item B — mobile Tinder-style swipe)
+// Native touch events only (3-dependency rule — no gesture lib). Wraps
+// the focused top card. Right swipe → Done, left swipe → Skip.
+//
+// Guards that keep it from fighting the rest of the UI:
+//  - Only triggers when horizontal movement dominates vertical AND clears
+//    the threshold — so vertical page scroll still works.
+//  - Ignores gestures that START on a button / link / textarea / input /
+//    angle-chip so tapping buttons, picking angles, and editing the
+//    comment keep working.
+//  - Under threshold → animated snap-back. Over threshold → fly-out then
+//    fires the action on the CURRENT card (read at gesture-end, never
+//    captured stale).
+// ═══════════════════════════════════════════════════════════════════
+const SWIPE_THRESHOLD = 80;   // px horizontal travel to commit
+const SWIPE_DOMINANCE = 1.4;  // |dx| must exceed |dy| * this to count as horizontal
+
+function SwipeCard({ cardId, onAction, children }) {
+  const wrapRef = useRef(null);
+  const start = useRef(null);   // { x, y } | null
+  const [dx, setDx] = useState(0);
+  const [horizontal, setHorizontal] = useState(false); // locked-in horizontal gesture
+  const [flying, setFlying] = useState(0); // 0 | 1 (right) | -1 (left) — fly-out direction
+
+  // Reset transient drag state whenever the focused card changes.
+  useEffect(() => {
+    setDx(0); setHorizontal(false); setFlying(0); start.current = null;
+  }, [cardId]);
+
+  const interactiveStart = (target) => {
+    // Walk up from the touch target — if the gesture began on an
+    // interactive element, don't hijack it as a swipe.
+    let n = target;
+    while (n && n !== wrapRef.current) {
+      const tag = n.tagName;
+      if (tag === "BUTTON" || tag === "A" || tag === "TEXTAREA" || tag === "INPUT" || tag === "SELECT") return true;
+      if (n.classList && n.classList.contains("li-angle-chip")) return true;
+      n = n.parentNode;
+    }
+    return false;
+  };
+
+  const onTouchStart = (e) => {
+    if (flying) return;
+    const t = e.touches[0];
+    if (!t) return;
+    if (interactiveStart(e.target)) { start.current = null; return; }
+    start.current = { x: t.clientX, y: t.clientY };
+    setHorizontal(false);
+  };
+
+  const onTouchMove = (e) => {
+    if (!start.current) return;
+    const t = e.touches[0];
+    if (!t) return;
+    const ddx = t.clientX - start.current.x;
+    const ddy = t.clientY - start.current.y;
+    // Decide direction once we have a few px of travel.
+    if (!horizontal) {
+      if (Math.abs(ddx) < 8 && Math.abs(ddy) < 8) return;
+      if (Math.abs(ddx) > Math.abs(ddy) * SWIPE_DOMINANCE) {
+        setHorizontal(true);
+      } else {
+        // Vertical-dominant → let the page scroll, abandon this gesture.
+        start.current = null;
+        return;
+      }
+    }
+    // Horizontal gesture locked in — track it and suppress page scroll.
+    if (e.cancelable) e.preventDefault();
+    setDx(ddx);
+  };
+
+  const onTouchEnd = () => {
+    if (!start.current || !horizontal) {
+      start.current = null; setDx(0); setHorizontal(false); return;
+    }
+    const committed = dx;
+    start.current = null; setHorizontal(false);
+    if (Math.abs(committed) >= SWIPE_THRESHOLD) {
+      const dir = committed > 0 ? 1 : -1;
+      setFlying(dir);
+      const action = dir > 0 ? "done" : "skip";
+      // Let the fly-out animation play, then fire on the current card id.
+      setTimeout(() => { onAction(cardId, action); }, 180);
+    } else {
+      setDx(0); // snap back (CSS transition handles the ease)
+    }
+  };
+
+  const past = Math.abs(dx) >= SWIPE_THRESHOLD;
+  const dragging = horizontal && dx !== 0 && !flying;
+  const translate = flying ? flying * (typeof window !== "undefined" ? window.innerWidth : 600) : dx;
+  const rot = flying ? flying * 8 : Math.max(-6, Math.min(6, dx / 14));
+
+  return (
+    <div
+      ref={wrapRef}
+      className={`swipe-card ${flying ? "swipe-flying" : ""} ${dragging ? "swipe-dragging" : ""}`}
+      onTouchStart={onTouchStart}
+      onTouchMove={onTouchMove}
+      onTouchEnd={onTouchEnd}
+      onTouchCancel={onTouchEnd}
+      style={{ transform: `translateX(${translate}px) rotate(${rot}deg)` }}
+    >
+      {/* Swipe affordances — appear as the card passes threshold */}
+      <div className={`swipe-hint swipe-hint-done ${dx > 0 && past ? "show" : ""}`} aria-hidden="true">✓ Done</div>
+      <div className={`swipe-hint swipe-hint-skip ${dx < 0 && past ? "show" : ""}`} aria-hidden="true">Skip</div>
+      {children}
     </div>
   );
 }
@@ -1532,6 +1913,9 @@ function Card({ card, leaving, enriching, subject, meta, summary, onAction, onEn
           )}
         </div>
       </div>
+
+      {/* Keyboard hint — desktop only (hidden on touch via CSS) */}
+      <div className="card-kbd-hint" aria-hidden="true">⌨ D done · S skip</div>
     </div>
   );
 }
@@ -1555,7 +1939,7 @@ function Card({ card, leaving, enriching, subject, meta, summary, onAction, onEn
 // ═══════════════════════════════════════════════════════════════════
 function LinkedInCommentCard({
   card, leaving, subject, meta, commentData,
-  onRequestAngles, onAction, onSetFocus, onItemFeedback, isFocused, onCopied,
+  onRequestAngles, onAction, onSetFocus, onFeedbackSubmitted, commentPrefs, isFocused, onCopied,
 }) {
   const isDisabled = leaving;
   const postUrl = card.url || card.lead_linkedin || "";
@@ -1563,7 +1947,6 @@ function LinkedInCommentCard({
   const [chosenAngleId, setChosenAngleId] = useState(null);
   const [comment, setComment] = useState("");
   const [commentStatus, setCommentStatus] = useState("idle"); // idle | loading | ready | error
-  const [persona, setPersona] = useState("");
 
   // Lazy-fetch angles when this card mounts (it only mounts when it's the
   // visible top card — the stack renders one card at a time).
@@ -1574,6 +1957,32 @@ function LinkedInCommentCard({
 
   const status = commentData?.status || "loading";
   const angles = commentData?.angles || [];
+
+  // ─── 1/2/3 angle-pick keyboard shortcut (item A) ────────────────
+  // This card is the focused top card while mounted, so it owns the angle
+  // hotkeys. Same guards as the parent's Done/Skip handler: ignore while
+  // typing in a field, while leaving (mid-action), and on modifier chords.
+  // Reads the latest `angles` via the effect dep so it never picks a stale
+  // angle list.
+  useEffect(() => {
+    const onKey = (e) => {
+      if (e.ctrlKey || e.metaKey || e.altKey) return;
+      const el = document.activeElement;
+      if (el) {
+        const tag = el.tagName;
+        if (tag === "INPUT" || tag === "TEXTAREA" || tag === "SELECT" || el.isContentEditable) return;
+      }
+      if (isDisabled) return;
+      if (e.key === "1" || e.key === "2" || e.key === "3") {
+        const idx = Number(e.key) - 1;
+        const a = angles[idx];
+        if (a) { e.preventDefault(); pickAngle(a); }
+      }
+    };
+    window.addEventListener("keydown", onKey);
+    return () => window.removeEventListener("keydown", onKey);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [angles, isDisabled]);
   const bullets = commentData?.bullets || [];
   const postSummary = commentData?.summary || "";
 
@@ -1591,7 +2000,8 @@ function LinkedInCommentCard({
           signal: card.signal,
           url: postUrl,
           angle: { label: angle.label, hint: angle.hint },
-          persona,
+          // learned comment prefs (closes the loop) — replaces persona
+          feedback: commentPrefs?.current || [],
         }),
       });
       const d = await r.json();
@@ -1698,27 +2108,29 @@ function LinkedInCommentCard({
           {(commentStatus === "ready" || (commentStatus !== "loading" && comment)) && (
             <>
               <div className="li-comment-hdr">
-                <span className="li-comment-label">Your comment (editable)</span>
+                <span className="li-comment-label">Your comment (editable · highlight text to give feedback)</span>
                 <span className="li-comment-meta">{comment.length} chars</span>
               </div>
-              <textarea
-                className="li-comment-edit"
-                value={comment}
-                rows={Math.max(3, Math.min(8, Math.ceil((comment.length || 1) / 70)))}
-                onChange={(e) => setComment(e.target.value)}
-              />
+              {/* Highlight-to-feedback: select text inside the comment → 💬
+                  Feedback pill → note → POST /api/feedback. Closes the loop
+                  (item_type "comment"). Replaces the old prefill-chat button. */}
+              <FeedbackCapture
+                itemType="comment"
+                leadName={card.lead_name}
+                leadCompany={card.company}
+                onSubmitted={onFeedbackSubmitted}
+              >
+                <textarea
+                  className="li-comment-edit"
+                  value={comment}
+                  rows={Math.max(3, Math.min(8, Math.ceil((comment.length || 1) / 70)))}
+                  onChange={(e) => setComment(e.target.value)}
+                />
+              </FeedbackCapture>
               <div className="li-comment-row">
                 <button className="btn" onClick={regenerate} disabled={isDisabled || commentStatus === "loading"} type="button">
                   ↻ Regenerate
                 </button>
-                {onItemFeedback && (
-                  <button
-                    className="btn"
-                    onClick={() => onItemFeedback(card, "LinkedIn comment")}
-                    type="button"
-                    title="Give feedback on this comment to train future output"
-                  >💬 feedback</button>
-                )}
                 <button
                   className="btn primary"
                   onClick={commentOnLinkedIn}
@@ -1754,6 +2166,11 @@ function LinkedInCommentCard({
             >{isFocused ? "🎯" : "💬"}</button>
           )}
         </div>
+      </div>
+
+      {/* Keyboard hint — desktop only (hidden on touch via CSS) */}
+      <div className="card-kbd-hint" aria-hidden="true">
+        ⌨ D done · S skip{status === "ready" && angles.length > 0 ? " · 1/2/3 angle" : ""}
       </div>
     </div>
   );
@@ -1823,7 +2240,7 @@ function buildScoreTooltip(lead) {
 function DailyBatchCard({
   batch, collapsed, onToggleCollapsed, expanded, onToggleExpand,
   onSendAll, onSkipAll, onSendOne, onSkipOne, onEditField,
-  editingDraft, setEditingDraft, onItemFeedback,
+  editingDraft, setEditingDraft, onFeedbackSubmitted,
 }) {
   const count = batch.leads?.length || 0;
   if (count === 0) return null;
@@ -1890,7 +2307,7 @@ function DailyBatchCard({
               onEdit={(field, newText) => onEditField(lead.id, field, newText)}
               editingDraft={editingDraft}
               setEditingDraft={setEditingDraft}
-              onItemFeedback={onItemFeedback}
+              onFeedbackSubmitted={onFeedbackSubmitted}
             />
           ))}
         </div>
@@ -1907,7 +2324,10 @@ function DailyBatchCard({
 // 4 pre-generated messages with char counts (green if under limit).
 // Click any message to inline-edit; saves on blur/cmd+enter.
 // ═══════════════════════════════════════════════════════════════════
-function BatchLeadCard({ lead, index, total, onSend, onSkip, onEdit, editingDraft, setEditingDraft, onItemFeedback }) {
+function BatchLeadCard({ lead, index, total, onSend, onSkip, onEdit, editingDraft, setEditingDraft, onFeedbackSubmitted }) {
+  // Map a batch field key to the feedback item_type taxonomy.
+  // connection_note → "connection_note"; dm1/dm2/dm3 → "dm".
+  const fieldToItemType = (key) => (key === "connection_note" ? "connection_note" : "dm");
   // why_reasons is now clean newline-separated bullets (server-side parsed
   // from raw Signal text via buildLeadBrief → briefToUiBullets).
   // Fall back to splitting on " · " for legacy records.
@@ -2007,51 +2427,57 @@ function BatchLeadCard({ lead, index, total, onSend, onSkip, onEdit, editingDraf
                       type="button"
                     >✎ edit</button>
                   )}
-                  {/* item 4: per-item feedback → focuses chat on this lead
-                      and prefills a feedback scaffold (trains future output) */}
-                  {onItemFeedback && (
-                    <button
-                      className="batch-msg-affordance"
-                      onClick={() => onItemFeedback(
-                        { lead_name: lead.lead_name, company: lead.company, lead_title: lead.title },
-                        label
-                      )}
-                      title="Give feedback on this message to train future output"
-                      type="button"
-                    >💬 feedback</button>
-                  )}
+                  {/* feedback loop: highlight the message text below to get a
+                      💬 Feedback pill → note → POST /api/feedback. Replaces
+                      the old prefill-chat button (which no generator read). */}
+                  <span className="batch-msg-affordance batch-msg-fbhint" title="Highlight any part of the message below to give feedback">💬 highlight to give feedback</span>
                 </span>
               </div>
-              {isEditing ? (
-                <textarea
-                  className="batch-msg-edit"
-                  defaultValue={text}
-                  autoFocus
-                  rows={Math.max(2, Math.min(8, Math.ceil(text.length / 80)))}
-                  onBlur={(e) => {
-                    const v = e.target.value.trim();
-                    if (v !== text) onEdit(airtableField, v);
-                    setEditingDraft(null);
-                  }}
-                  onKeyDown={(e) => {
-                    if (e.key === "Escape") {
-                      e.target.value = text;
+              {/* item_type: connection_note for the note, dm for DM1/2/3. */}
+              <FeedbackCapture
+                itemType={fieldToItemType(key)}
+                leadName={lead.lead_name}
+                leadCompany={lead.company}
+                onSubmitted={onFeedbackSubmitted}
+              >
+                {isEditing ? (
+                  <textarea
+                    className="batch-msg-edit"
+                    defaultValue={text}
+                    autoFocus
+                    rows={Math.max(2, Math.min(8, Math.ceil(text.length / 80)))}
+                    onBlur={(e) => {
+                      const v = e.target.value.trim();
+                      if (v !== text) onEdit(airtableField, v);
                       setEditingDraft(null);
-                    }
-                    if (e.key === "Enter" && (e.metaKey || e.ctrlKey)) {
-                      e.target.blur();
-                    }
-                  }}
-                />
-              ) : (
-                <div
-                  className="batch-msg-text"
-                  onClick={() => setEditingDraft({ recordId: lead.id, field: airtableField, text })}
-                  title="Click to edit"
-                >
-                  {text || <span className="batch-msg-empty">(empty — click to write)</span>}
-                </div>
-              )}
+                    }}
+                    onKeyDown={(e) => {
+                      if (e.key === "Escape") {
+                        e.target.value = text;
+                        setEditingDraft(null);
+                      }
+                      if (e.key === "Enter" && (e.metaKey || e.ctrlKey)) {
+                        e.target.blur();
+                      }
+                    }}
+                  />
+                ) : (
+                  <div
+                    className="batch-msg-text"
+                    onClick={() => {
+                      // If the operator just highlighted text (to give
+                      // feedback), don't hijack the click into edit mode —
+                      // that would unmount the selection + the pill.
+                      const sel = window.getSelection?.();
+                      if (sel && !sel.isCollapsed && sel.toString().trim()) return;
+                      setEditingDraft({ recordId: lead.id, field: airtableField, text });
+                    }}
+                    title="Click to edit · highlight to give feedback"
+                  >
+                    {text || <span className="batch-msg-empty">(empty — click to write)</span>}
+                  </div>
+                )}
+              </FeedbackCapture>
             </div>
           );
         })}
