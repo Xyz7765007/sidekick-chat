@@ -85,6 +85,13 @@ function FeedbackCapture({ itemType, leadName, leadCompany, onSubmitted, childre
   const wrapRef = useRef(null);
   const pillRef = useRef(null);   // the floating pill button (desktop)
   const dockRef = useRef(null);   // the docked bar button (mobile)
+  // Pointer coords (clientX/clientY) from the LAST mouseup/touchend that ended
+  // a drag inside this wrapper. The pill anchors here so it appears right where
+  // the operator released the drag — not at the field's bounding-box edge (the
+  // old bug: a tall textarea low on the page positioned the pill near the action
+  // buttons, far from the highlighted text). Cleared after each capture so a
+  // selectionchange-only path (mobile) falls back to rect math.
+  const lastPointRef = useRef(null);
   // pill = { x, y, span } in viewport coords; popover open state separate.
   // `span` is stored as soon as a selection is detected, so the affordance no
   // longer depends on the selection still being alive when the operator taps
@@ -114,10 +121,27 @@ function FeedbackCapture({ itemType, leadName, leadCompany, onSubmitted, childre
   // span + (for desktop) the pill coords. Handles both textarea/input and
   // rendered text. Works without an event (selectionchange has no useful
   // target), reading document.activeElement for the field path.
+  // Clamp a pill anchor to the viewport so the pill never renders off-screen or
+  // under the sticky chat input. The pill is drawn with translate(-50%,-100%):
+  // it sits ABOVE (x,y) centred on x — so keep a margin on every side.
+  const clampPoint = useCallback((x, y) => {
+    const vw = typeof window !== "undefined" ? window.innerWidth : 1024;
+    const vh = typeof window !== "undefined" ? window.innerHeight : 768;
+    const cx = Math.max(60, Math.min(x, vw - 60));      // half-pill margin l/r
+    const cy = Math.max(40, Math.min(y, vh - 96));      // clear sticky chat input
+    return { x: cx, y: cy };
+  }, []);
+
   const captureSelection = useCallback(() => {
     if (open) return; // don't move the pill while the popover is up
     const root = wrapRef.current;
     if (!root) return;
+
+    // Prefer the actual pointer-release coords (where the drag ended) so the
+    // pill appears next to the highlighted text. `y - 40` lifts it just above
+    // the pointer. Fall back to rect math when there's no pointer (e.g. a
+    // selectionchange-driven capture on mobile).
+    const pt = lastPointRef.current;
 
     // ── textarea / input path ── (window.getSelection can't see inside these)
     const ae = document.activeElement;
@@ -127,8 +151,16 @@ function FeedbackCapture({ itemType, leadName, leadCompany, onSubmitted, childre
       if (typeof start === "number" && typeof end === "number" && end > start) {
         const selected = String(ae.value).slice(start, end).trim();
         if (selected) {
-          const r = ae.getBoundingClientRect();
-          setPill({ x: r.left + Math.min(r.width / 2, 120), y: Math.max(8, r.top - 8), span: selected });
+          let x, y;
+          if (pt) {
+            ({ x, y } = clampPoint(pt.x, pt.y - 40));
+          } else {
+            // No pointer (mobile selectionchange): fall back to near the field
+            // TOP (not the centre of a tall field), where text starts.
+            const r = ae.getBoundingClientRect();
+            ({ x, y } = clampPoint(r.left + Math.min(r.width / 2, 120), r.top - 8));
+          }
+          setPill({ x, y, span: selected });
           return;
         }
       }
@@ -143,12 +175,19 @@ function FeedbackCapture({ itemType, leadName, leadCompany, onSubmitted, childre
     // Only react if the selection is inside this wrapper.
     const anchor = sel.anchorNode;
     if (anchor && !root.contains(anchor)) { setPill(null); return; }
-    let rect;
-    try { rect = sel.getRangeAt(0).getBoundingClientRect(); } catch { rect = null; }
-    const x = rect ? rect.left + Math.min(rect.width / 2, 120) : 40;
-    const y = rect ? Math.max(8, rect.top - 8) : 40;
+    let x, y;
+    if (pt) {
+      ({ x, y } = clampPoint(pt.x, pt.y - 40));
+    } else {
+      let rect;
+      try { rect = sel.getRangeAt(0).getBoundingClientRect(); } catch { rect = null; }
+      ({ x, y } = clampPoint(
+        rect ? rect.left + Math.min(rect.width / 2, 120) : 40,
+        rect ? rect.top - 8 : 40
+      ));
+    }
     setPill({ x, y, span: text });
-  }, [open]);
+  }, [open, clampPoint]);
 
   // Wire selection detection. PERF (listener fan-out fix): the auto-batch view
   // mounts ~20 FeedbackCapture instances, so every document-level listener runs
@@ -166,9 +205,34 @@ function FeedbackCapture({ itemType, leadName, leadCompany, onSubmitted, childre
     let t = null;
     function onSelectionChange() {
       if (t) clearTimeout(t);
-      t = setTimeout(() => { t = null; captureSelection(); }, 150);
+      t = setTimeout(() => {
+        t = null;
+        // A real drag's trailing selectionchange fires right after mouseup/
+        // touchend stamped lastPointRef. Don't clobber a FRESH pointer anchor
+        // (< 600ms old) — that would yank the pill from the drag end back to the
+        // rect fallback. Only drop STALE coords so the genuine mobile/keyboard
+        // selectionchange path (no recent pointer) uses rect math.
+        const pt = lastPointRef.current;
+        if (!pt || (Date.now() - pt.ts) > 600) lastPointRef.current = null;
+        captureSelection();
+      }, 150);
     }
-    function onImmediate() { captureSelection(); }
+    // Pointer-ending events carry the release coords — stash them so the pill
+    // anchors at the drag end. keyup (keyboard selection) has no usable point.
+    function onPointerEnd(e) {
+      let cx, cy;
+      if (e.type === "touchend") {
+        const tch = e.changedTouches && e.changedTouches[0];
+        if (tch) { cx = tch.clientX; cy = tch.clientY; }
+      } else if (typeof e.clientX === "number") {
+        cx = e.clientX; cy = e.clientY;
+      }
+      lastPointRef.current = (typeof cx === "number" && typeof cy === "number")
+        ? { x: cx, y: cy, ts: Date.now() }
+        : null;
+      captureSelection();
+    }
+    function onKeyEnd() { lastPointRef.current = null; captureSelection(); }
     // mouseup/keyup/touchend are LOW-frequency (once per release/keypress), and
     // captureSelection cheaply no-ops for non-matching instances via root.contains.
     // Keep them document-level so a drag that STARTS in this wrapper but RELEASES
@@ -176,15 +240,15 @@ function FeedbackCapture({ itemType, leadName, leadCompany, onSubmitted, childre
     // — the earlier wrapper-scoped version lost that snappiness. The genuinely
     // high-frequency event (selectionchange) is the one that's debounced.
     document.addEventListener("selectionchange", onSelectionChange);
-    document.addEventListener("mouseup", onImmediate);
-    document.addEventListener("keyup", onImmediate);
-    document.addEventListener("touchend", onImmediate);
+    document.addEventListener("mouseup", onPointerEnd);
+    document.addEventListener("keyup", onKeyEnd);
+    document.addEventListener("touchend", onPointerEnd);
     return () => {
       if (t) clearTimeout(t);
       document.removeEventListener("selectionchange", onSelectionChange);
-      document.removeEventListener("mouseup", onImmediate);
-      document.removeEventListener("keyup", onImmediate);
-      document.removeEventListener("touchend", onImmediate);
+      document.removeEventListener("mouseup", onPointerEnd);
+      document.removeEventListener("keyup", onKeyEnd);
+      document.removeEventListener("touchend", onPointerEnd);
     };
   }, [captureSelection]);
 
@@ -2184,14 +2248,26 @@ function LinkedInCommentCard({
         {status === "error" && (
           <div className="li-post-error">Couldn't load the post brief. You can still open the post and Mark Done.</div>
         )}
-        {status === "ready" && (
+        {status === "ready" && (postSummary || bullets.length > 0) && (
           <>
-            {postSummary && <div className="card-summary">{postSummary}</div>}
-            {bullets.length > 0 && (
-              <ul className="li-post-bullets">
-                {bullets.map((b, i) => <li key={i}>{b}</li>)}
-              </ul>
-            )}
+            {/* Highlight-to-feedback on the most natural-to-highlight text on the
+                card: the AI summary line + the bullet points. Maps to the
+                "comment" item_type (already whitelisted backend-side) so feedback
+                here feeds the same comment-generation prefs loop. */}
+            <FeedbackCapture
+              itemType="comment"
+              leadName={card.lead_name}
+              leadCompany={card.company}
+              onSubmitted={onFeedbackSubmitted}
+            >
+              {postSummary && <div className="card-summary">{postSummary}</div>}
+              {bullets.length > 0 && (
+                <ul className="li-post-bullets">
+                  {bullets.map((b, i) => <li key={i}>{b}</li>)}
+                </ul>
+              )}
+              <div className="li-post-fbhint" aria-hidden="true">💬 highlight to give feedback</div>
+            </FeedbackCapture>
           </>
         )}
         {postUrl && (

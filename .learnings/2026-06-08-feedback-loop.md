@@ -53,3 +53,36 @@ prefs; the real loop is /api/feedback → preferences → prompt block.
   needsSetup → "Feedback store not set up yet — ping admin" instead of the
   generic "couldn't save".
 - 3-dep rule intact; `npx next build` → exit 0.
+
+## Highlight UX fix (2026-06-08)
+User reported "it didn't work" on a REAL mouse drag. Three root causes, all fixed
+in `components/SideKick.jsx` (+ `app/globals.css`):
+- **Pill landed far from the selection.** The textarea path positioned the pill
+  from the field's bounding rect (`r.left+…`, `r.top-8`). On a tall textarea low
+  on the page the pill rendered near the field edge / action buttons, not the
+  highlighted text — users never connected it to their drag. FIX: capture the
+  pointer-release coords. New `lastPointRef` stamped on mouseup (`e.clientX/Y`) and
+  touchend (`e.changedTouches[0].clientX/Y`) with a `ts`. `captureSelection` now
+  anchors the pill at `clampPoint(pt.x, pt.y - 40)` for BOTH the textarea path and
+  the rendered-text path, so the pill appears just above the drag end. Fallbacks:
+  no pointer (mobile `selectionchange`) → textarea falls back to field TOP, rendered
+  text to the range rect. Trailing `selectionchange` after a drag is debounced
+  150ms and only nulls `lastPointRef` if it's STALE (>600ms) — a fresh pointer
+  anchor isn't clobbered back to the rect. New `clampPoint` keeps x/y in-viewport
+  (≥60px l/r, y ≤ vh-96 to clear the sticky chat input). Pill keeps its
+  `onMouseDown preventDefault` so the same mouseup that created it can't dismiss it.
+- **Coverage too narrow.** Only the generated-comment textarea + batch fields were
+  wrapped. The most natural-to-highlight text — the LinkedInCommentCard AI summary
+  line + bullet points — was bare. FIX: wrapped the `{postSummary}` + `li-post-bullets`
+  block in `<FeedbackCapture itemType="comment">` (reusing the whitelisted "comment"
+  item_type — no backend change). Batch fields already wrapped (connection_note /
+  dm) and inherit the positioning fix centrally; click-to-edit guard (bail if
+  selection non-collapsed) untouched.
+- **Hint not everywhere.** Added a low-noise `💬 highlight to give feedback` hint
+  (`.li-post-fbhint`, `user-select:none`) under the summary/bullets, matching the
+  batch `batch-msg-fbhint`. Comment textarea hint already present.
+- Surfaces now wrapped + item_type: summary+bullets → `comment`, comment textarea
+  → `comment`, batch connection note → `connection_note`, batch DM1/2/3 → `dm`.
+- 3-dep rule intact (native pointer/DOM only); `npx next build` → ✓ Compiled,
+  clean (the transient post-compile manifest ENOENT cleared on a fresh `.next` run,
+  as previously documented).

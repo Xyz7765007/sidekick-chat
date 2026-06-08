@@ -1654,3 +1654,14 @@ body { position: relative; }
 
 /* Hint shown in the batch message header (matches existing affordances). */
 .batch-msg-fbhint { cursor: default; text-decoration: none; opacity: 0.85; }
+
+/* Subtle "highlight to give feedback" hint under the LinkedIn post summary +
+   bullets (the now-wrapped FeedbackCapture surface). Low-noise, matches the
+   batch hint tone. */
+.li-post-fbhint {
+  font-size: 10.5px;
+  color: var(--t3);
+  opacity: 0.8;
+  margin-top: 4px;
+  user-select: none;
+}
