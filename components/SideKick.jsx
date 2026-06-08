@@ -1,6 +1,7 @@
 "use client";
 
 import { useEffect, useRef, useState, useCallback } from "react";
+import { createPortal } from "react-dom";
 
 // ═══════════════════════════════════════════════════════════════════
 // SIDE KICK — Main chatbot UI
@@ -101,6 +102,17 @@ function FeedbackCapture({ itemType, leadName, leadCompany, onSubmitted, childre
   const [span, setSpan] = useState("");
   const [note, setNote] = useState("");
   const [saving, setSaving] = useState(false);
+
+  // SSR/hydration guard for the body portal. The floating pill/dock/popover are
+  // `position:fixed` with VIEWPORT coords, but FeedbackCapture renders inside the
+  // card tree, which has TRANSFORMED ancestors (.card-stack / .li-comment-card
+  // entering animation, .swipe-card translateX). A transformed ancestor becomes
+  // the containing block for fixed descendants, so the pill would anchor to the
+  // CARD, not the viewport (the ~+304/+186px offset bug). Portaling the overlays
+  // to document.body escapes those transforms so `position:fixed` is genuinely
+  // viewport-relative. Only portal on the client — `document` is undefined in SSR.
+  const [mounted, setMounted] = useState(false);
+  useEffect(() => { setMounted(true); }, []);
 
   // Coarse pointer / narrow viewport → dock the control as a fixed bottom bar
   // so the OS's native selection toolbar (Copy/Share) can't cover it. Desktop
@@ -338,13 +350,15 @@ function FeedbackCapture({ itemType, leadName, leadCompany, onSubmitted, childre
     ? { left: "50%", bottom: 64, top: "auto" }
     : { left: pill?.x ?? 40, top: (pill?.y ?? 40) + 8 };
 
-  return (
-    <div
-      ref={wrapRef}
-      className="fb-capture"
-    >
-      {children}
-
+  // The floating pill / docked bar / popover are all `position:fixed` and must
+  // be anchored to the VIEWPORT, not to a transformed card ancestor. They're
+  // portaled to document.body to escape `.swipe-card` / `.card-stack` /
+  // `.li-comment-card` transforms (see the `mounted` comment above). Refs work
+  // through portals, so the outside-click dismiss (pillRef/dockRef `.contains`)
+  // and the click-to-edit guard still function; only the DOM *position* changes,
+  // not the React tree, so `onSubmitted`/state callbacks are unaffected.
+  const overlays = (
+    <>
       {/* Desktop: floating pill at the selection rect. */}
       {pill && !open && !docked && (
         <button
@@ -401,6 +415,20 @@ function FeedbackCapture({ itemType, leadName, leadCompany, onSubmitted, childre
           </div>
         </div>
       )}
+    </>
+  );
+
+  return (
+    <div
+      ref={wrapRef}
+      className="fb-capture"
+    >
+      {children}
+
+      {/* Overlays portal to <body> so fixed positioning is viewport-relative,
+          not relative to a transformed card ancestor. The in-tree wrapper above
+          (wrapRef) stays put — selection scoping (root.contains) depends on it. */}
+      {mounted && typeof document !== "undefined" && createPortal(overlays, document.body)}
     </div>
   );
 }

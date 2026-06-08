@@ -86,3 +86,38 @@ in `components/SideKick.jsx` (+ `app/globals.css`):
 - 3-dep rule intact (native pointer/DOM only); `npx next build` → ✓ Compiled,
   clean (the transient post-compile manifest ENOENT cleared on a fresh `.next` run,
   as previously documented).
+
+## Pill placement fix — portal to body (2026-06-08)
+**What broke:** The highlight-to-feedback floating pill (and popover/mobile dock)
+rendered ~+304px x / +186px y away from the actual selection on every surface.
+**Root cause:** The pill/popover/dock are `position:fixed` with viewport coords
+(`pill.x/pill.y`), but `FeedbackCapture` renders them INSIDE the card tree, which
+has TRANSFORMED ancestors — `.card-stack`/`.li-comment-card` (entering animation
+`transform`) and `.swipe-card` (swipe `translateX`). A transformed ancestor
+becomes the containing block for its `position:fixed` descendants, so the pill
+anchored to the CARD, not the viewport (constant card-offset). Verified ancestors:
+`card card-stack li-comment-card entering` + `swipe-card`.
+**Fix (`components/SideKick.jsx`, FeedbackCapture only):**
+- `import { createPortal } from "react-dom";` (react-dom is existing — NO new dep,
+  package.json untouched, 3-dep rule intact).
+- Extracted the pill + dock + popover JSX into an `overlays` fragment and render it
+  via `createPortal(overlays, document.body)` so it escapes the transformed
+  ancestors and `position:fixed` is genuinely viewport-relative. After portaling,
+  a drag releasing at viewport (cx,cy) places the pill (CSS `translate(-50%,-100%)`)
+  centred at cx, bottom ~cy-40 with NO card-offset.
+- SSR/hydration guard: `const [mounted,setMounted]=useState(false)` +
+  `useEffect(()=>setMounted(true),[])`; portal only when
+  `mounted && typeof document !== "undefined"`.
+- The in-tree `wrapRef` div + `{children}` STAY in the normal tree — selection
+  scoping (`root.contains(...)`, textarea selectionStart/End) is unchanged.
+- Refs work through portals: outside-click dismiss (`pillRef`/`dockRef` `.contains`)
+  still excludes the (now portaled) pill/dock, so clicking the pill doesn't dismiss
+  it; the `onMouseDown preventDefault` selection-keepalive + click-to-edit guard +
+  600ms pointer-freshness + submit→/api/feedback all untouched.
+**Build:** `rm -rf .next && ./node_modules/.bin/next build` → ✓ Compiled
+successfully, exit 0, all routes (incl `/`, `/api/feedback`). The transient
+post-compile manifest ENOENT only appears on a concurrent/`npx` run; a clean
+single run is green (as previously documented).
+**Prevention:** Any new `position:fixed` overlay rendered inside the card stack
+MUST portal to body — the card transforms will otherwise re-anchor it. Don't try
+to "fix" placement with coord math; the containing block is the real cause.
