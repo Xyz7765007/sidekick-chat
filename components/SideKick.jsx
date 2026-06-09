@@ -1642,9 +1642,9 @@ Best,
                   return next;
                 });
               }}
-              onSendAll={() => handleBatchAction("send_all", { batchId: "all" })}
+              onSendAll={(sendMode) => handleBatchAction("send_all", { batchId: "all", sendMode })}
               onSkipAll={() => handleBatchAction("skip_all", { batchId: "all" })}
-              onSendOne={(recordId) => handleBatchAction("send_one", { recordId })}
+              onSendOne={(recordId, sendMode) => handleBatchAction("send_one", { recordId, sendMode })}
               onSkipOne={(recordId) => handleBatchAction("skip_one", { recordId })}
               onEditField={(recordId, field, newText) => handleBatchAction("edit", { recordId, field, newText })}
               editingDraft={editingDraft}
@@ -2932,6 +2932,9 @@ function DailyBatchCard({
   editingDraft, setEditingDraft, onFeedbackSubmitted,
 }) {
   const count = batch.leads?.length || 0;
+  // Per-batch send mode. Default "manual" — the team sends by hand (execs).
+  // "auto" → SignalScope's cron sends the connection + DMs via LinkedIn.
+  const [sendMode, setSendMode] = useState("manual");
   if (count === 0) return null;
 
   const totalConnChars = (batch.leads || []).reduce((s, l) => s + (l.connection_note?.length || 0), 0);
@@ -2968,11 +2971,39 @@ function DailyBatchCard({
         </button>
       </div>
 
+      {/* Send-mode toggle (per-batch). Default Manual — the team sends by
+          hand. Auto hands the send off to SignalScope's LinkedIn cron. */}
+      <div className="batch-sendmode" role="radiogroup" aria-label="Send mode">
+        <button
+          type="button"
+          className={`batch-sendmode-opt ${sendMode === "manual" ? "is-active" : ""}`}
+          role="radio"
+          aria-checked={sendMode === "manual"}
+          onClick={() => setSendMode("manual")}
+        >
+          ✋ Manual (I'll send)
+        </button>
+        <button
+          type="button"
+          className={`batch-sendmode-opt ${sendMode === "auto" ? "is-active" : ""}`}
+          role="radio"
+          aria-checked={sendMode === "auto"}
+          onClick={() => setSendMode("auto")}
+        >
+          🤖 Auto (send for me)
+        </button>
+      </div>
+      <div className="batch-sendmode-explainer">
+        {sendMode === "manual"
+          ? "You'll copy each message and send the connection + DMs by hand on LinkedIn."
+          : "SignalScope sends the connection request + DMs automatically via LinkedIn."}
+      </div>
+
       {/* item 3: two primaries only. "Review one-by-one" is demoted to a
           quieter inline text toggle below the primary row, not a third
           equal-weight button. */}
       <div className="batch-ctas">
-        <button className="btn primary" onClick={onSendAll}>
+        <button className="btn primary" onClick={() => onSendAll(sendMode)}>
           ▶ Send all {count}
         </button>
         <button className="btn danger" onClick={onSkipAll}>
@@ -2991,7 +3022,7 @@ function DailyBatchCard({
               lead={lead}
               index={idx + 1}
               total={count}
-              onSend={() => onSendOne(lead.id)}
+              onSend={() => onSendOne(lead.id, sendMode)}
               onSkip={() => onSkipOne(lead.id)}
               onEdit={(field, newText) => onEditField(lead.id, field, newText)}
               editingDraft={editingDraft}

@@ -35,3 +35,15 @@ Backend (news-material) added `record_manual_connection_sent`,
   (existing copyToClipboard) + window.open only.
 - Copy comes ONLY from backend `messageToCopy` (Generated note/DM) — never the
   internal signal/summary. `npx next build` → exit 0, 3 new routes listed.
+
+## Update (later 2026-06-09) — AUTO vs MANUAL send toggle
+- `DailyBatchCard` now has a per-batch send-mode toggle (`useState`, **default
+  "manual"** — execs send by hand). Two pills: "✋ Manual (I'll send)" /
+  "🤖 Auto (send for me)" + a one-line explainer of the selected mode.
+- `onSendAll(sendMode)` / `onSendOne(recordId, sendMode)` now carry the mode;
+  parent passes `sendMode` in the `handleBatchAction` params → POST body to
+  `/api/auto-batch/action`. The proxy already spreads the whole body
+  (`{ ...body, baseId }`), so `sendMode` forwards with no proxy change.
+- Backend maps `sendMode` → `Mode:"manual"` (cron skips) or `"auto_batch"`
+  (cron auto-sends). New CSS: `.batch-sendmode*` matches the card styling.
+  `npx next build` → exit 0.
