@@ -1762,3 +1762,54 @@ body { position: relative; }
   margin-top: 4px;
   user-select: none;
 }
+
+/* ─── Manual-with-assist outreach queue (Kunal Batch-2 #18/#19) ─── */
+.ma-queue {
+  margin-bottom: 24px;
+}
+.ma-queue-hdr {
+  display: flex; align-items: center; gap: 8px;
+  margin-bottom: 10px;
+  font-size: 13px; font-weight: 600; color: var(--t1);
+  letter-spacing: -0.01em;
+}
+.ma-queue-icon { font-size: 16px; line-height: 1; }
+.ma-queue-title { color: var(--t1); }
+
+.ma-card {
+  background: var(--bg-warm);
+  border: 1px solid var(--line);
+  border-left: 3px solid var(--acc);
+  border-radius: 12px;
+  box-shadow: var(--neu-shadow-tight);
+  padding: 16px 18px;
+  margin-bottom: 12px;
+}
+.ma-card-waiting {
+  border-left-color: var(--t3);
+  opacity: 0.8;
+}
+.ma-hdr { margin-bottom: 10px; }
+.ma-name { font-size: 14px; font-weight: 600; color: var(--t1); letter-spacing: -0.01em; }
+.ma-title { color: var(--t2); font-weight: 400; font-size: 13px; }
+.ma-company { color: var(--t2); font-weight: 400; font-size: 13px; }
+.ma-context {
+  font-size: 12px; color: var(--t2); line-height: 1.5; margin-top: 4px;
+}
+.ma-step-label {
+  font-size: 12px; font-weight: 600; color: var(--acc-deep);
+  margin-bottom: 8px; letter-spacing: 0.01em;
+}
+.ma-copybox {
+  background: var(--surface);
+  border: 1px solid var(--line);
+  border-radius: 8px;
+  padding: 10px 12px;
+  font-size: 13px; color: var(--t1); line-height: 1.55;
+  white-space: pre-wrap; word-wrap: break-word;
+  margin-bottom: 12px;
+}
+.ma-copybox-empty { color: var(--t3); font-style: italic; }
+.ma-ctas { display: flex; gap: 10px; flex-wrap: wrap; }
+.ma-ctas .btn { font-size: 12.5px; padding: 7px 13px; text-decoration: none; }
+.ma-waiting { font-size: 12.5px; color: var(--t2); }

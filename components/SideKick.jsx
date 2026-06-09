@@ -728,6 +728,11 @@ export default function SideKick() {
   // sequence, awaiting human approval. User clicks Send → Outreach record
   // flips from pending_approval → queued → cron picks it up → sends.
   const [autoBatches, setAutoBatches] = useState([]);
+  // Manual-with-assist outreach queue (Kunal Batch-2 #18/#19). In-flight
+  // Outreach records, each annotated with a computed `nextAction` telling the
+  // exec the single manual move to make on LinkedIn (send connection / mark
+  // accepted / send DM N / waiting). NO automation — exec sends by hand.
+  const [outreachQueue, setOutreachQueue] = useState([]);
   const [batchLeaving, setBatchLeaving] = useState(new Set());
   const [batchExpanded, setBatchExpanded] = useState(new Set()); // batch IDs currently "Review one-by-one"
   // item 5: the daily batch card is collapsed to a compact single-line
@@ -741,9 +746,63 @@ export default function SideKick() {
     try {
       const r = await fetch("/api/auto-batch/pending", { cache: "no-store" });
       const data = await r.json();
-      if (data.ok) setAutoBatches(data.batches || []);
+      if (data.ok) {
+        setAutoBatches(data.batches || []);
+        setOutreachQueue(data.outreach_queue || []);
+      }
     } catch {}
   }, []);
+
+  // ─── Manual-with-assist outreach actions (no automation) ──────────
+  // Each posts to a 1:1 proxy that forwards to SignalScope /api/outreach
+  // with the Bearer header server-side, then refetches the queue.
+  async function recordConnectionSent(outreachItemId) {
+    try {
+      const r = await fetch("/api/outreach/record-connection-sent", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ outreachItemIds: [outreachItemId] }),
+      });
+      const data = await r.json();
+      if (data.marked) showToast("Marked connection sent", 2200);
+      else showToast(`Error: ${data.error || "Action failed"}`, 4000);
+      await fetchAutoBatches();
+    } catch (e) {
+      showToast(`Network error: ${e.message}`, 4000);
+    }
+  }
+
+  async function markConnectionAccepted(outreachItemId) {
+    try {
+      const r = await fetch("/api/outreach/mark-connected", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ outreachItemIds: [outreachItemId] }),
+      });
+      const data = await r.json();
+      if (data.marked) showToast("Marked accepted — DM1 due in 2 days", 2600);
+      else showToast(`Error: ${data.error || "Action failed"}`, 4000);
+      await fetchAutoBatches();
+    } catch (e) {
+      showToast(`Network error: ${e.message}`, 4000);
+    }
+  }
+
+  async function recordDmSent(outreachItemId, step) {
+    try {
+      const r = await fetch("/api/outreach/record-dm-sent", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ outreachItemId, step }),
+      });
+      const data = await r.json();
+      if (data.ok) showToast(`Marked DM${step} sent`, 2200);
+      else showToast(`Error: ${data.error || "Action failed"}`, 4000);
+      await fetchAutoBatches();
+    } catch (e) {
+      showToast(`Network error: ${e.message}`, 4000);
+    }
+  }
 
   async function handleGenerateBatch(force = false) {
     if (batchGenerating) return;
@@ -1594,6 +1653,31 @@ Best,
             />
           );
         })()}
+
+        {/* ─── MANUAL-WITH-ASSIST OUTREACH QUEUE (Kunal Batch-2 #18/#19) ──
+            In-flight leads that need a manual LinkedIn move by the exec
+            (send connection / mark accepted / send DM N), plus muted
+            "waiting" entries. The exec sends by hand; we hand them the copy
+            and record the state. Sits alongside today's batch, above the
+            unified task stack. NO automation. */}
+        {outreachQueue.length > 0 && (
+          <div className="ma-queue">
+            <div className="ma-queue-hdr">
+              <span className="ma-queue-icon">🤝</span>
+              <span className="ma-queue-title">LinkedIn follow-ups · {outreachQueue.filter(i => i.nextAction?.type !== "waiting").length} to action</span>
+            </div>
+            {outreachQueue.map(item => (
+              <ManualAssistCard
+                key={item.id}
+                item={item}
+                onRecordConnectionSent={recordConnectionSent}
+                onMarkAccepted={markConnectionAccepted}
+                onRecordDmSent={recordDmSent}
+                onCopied={(msg) => showToast(msg, 2600)}
+              />
+            ))}
+          </div>
+        )}
 
         {/* ─── UNIFIED TASK STACK (Biscuit-style one-at-a-time) ─────
             Per May 20 client feedback ("check how it was for truffle"
@@ -2730,6 +2814,110 @@ function buildScoreTooltip(lead) {
   if (bb.topx) parts.push(`+${bb.topx} ICP fit`);
   if (lead.has_movement) parts.push("(movement preempt: floored at 90)");
   return `Composite score ${lead.score}: ${parts.join(" ")}`;
+}
+
+// ═══════════════════════════════════════════════════════════════════
+// MANUAL-WITH-ASSIST OUTREACH CARD (Kunal Batch-2 #18/#19)
+// One in-flight Outreach lead. The exec performs the LinkedIn action by
+// HAND — this card just hands them the right copy + opens the profile, then
+// records the state. NO automation, NO Unipile auto-send.
+// Renders by `nextAction.type`: connection / accept / dm / waiting.
+// ═══════════════════════════════════════════════════════════════════
+function ManualAssistCard({ item, onRecordConnectionSent, onMarkAccepted, onRecordDmSent, onCopied }) {
+  const na = item.nextAction || {};
+  const linkedinUrl = na.linkedinUrl || item.linkedin_url || "";
+  const lead = item.lead_name || "this lead";
+  // Profile URL tidy for display
+  const profileShort = linkedinUrl.replace(/^https?:\/\/(www\.)?linkedin\.com\//, "linkedin.com/");
+
+  function copyAndOpen(text, msg) {
+    if (linkedinUrl) window.open(linkedinUrl, "_blank", "noopener,noreferrer");
+    copyToClipboard(text || "", () => onCopied?.(msg));
+  }
+
+  const header = (
+    <div className="ma-hdr">
+      <div className="ma-name">
+        {lead}
+        {item.title && <span className="ma-title"> · {item.title}</span>}
+        {item.company && <span className="ma-company"> @ {item.company}</span>}
+      </div>
+      {item.signal && <div className="ma-context">{item.signal}</div>}
+    </div>
+  );
+
+  if (na.type === "connection") {
+    const note = na.messageToCopy || "";
+    return (
+      <div className="ma-card">
+        {header}
+        <div className="ma-step-label">Send connection request</div>
+        {note
+          ? <div className="ma-copybox">{note}</div>
+          : <div className="ma-copybox ma-copybox-empty">No connection note — send without one.</div>}
+        <div className="ma-ctas">
+          <button className="btn primary" onClick={() => copyAndOpen(note, "Note copied — paste it in LinkedIn")}>
+            Copy note &amp; open LinkedIn
+          </button>
+          <button className="btn" onClick={() => onRecordConnectionSent(item.id)}>
+            Mark connection sent
+          </button>
+        </div>
+      </div>
+    );
+  }
+
+  if (na.type === "accept") {
+    return (
+      <div className="ma-card">
+        {header}
+        <div className="ma-step-label">Connection request sent. Accepted on LinkedIn?</div>
+        <div className="ma-ctas">
+          {linkedinUrl && (
+            <a className="btn" href={linkedinUrl} target="_blank" rel="noopener noreferrer">
+              Open profile
+            </a>
+          )}
+          <button className="btn primary" onClick={() => onMarkAccepted(item.id)}>
+            Mark accepted
+          </button>
+        </div>
+      </div>
+    );
+  }
+
+  if (na.type === "dm") {
+    const step = na.step;
+    const dm = na.messageToCopy || "";
+    return (
+      <div className="ma-card">
+        {header}
+        <div className="ma-step-label">DM{step} to {lead}</div>
+        {dm
+          ? <div className="ma-copybox">{dm}</div>
+          : <div className="ma-copybox ma-copybox-empty">No DM{step} text generated.</div>}
+        <div className="ma-ctas">
+          <button className="btn primary" onClick={() => copyAndOpen(dm, `DM${step} copied — paste it in LinkedIn`)}>
+            Copy DM &amp; open LinkedIn
+          </button>
+          <button className="btn" onClick={() => onRecordDmSent(item.id, step)}>
+            Mark DM{step} sent
+          </button>
+        </div>
+      </div>
+    );
+  }
+
+  if (na.type === "waiting") {
+    return (
+      <div className="ma-card ma-card-waiting">
+        {header}
+        <div className="ma-waiting">DM{na.step} scheduled — due {na.dueDate || "soon"}</div>
+      </div>
+    );
+  }
+
+  return null;
 }
 
 // ═══════════════════════════════════════════════════════════════════
