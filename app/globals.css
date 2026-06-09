@@ -1634,6 +1634,124 @@ body { position: relative; }
 /* Hint shown in the batch message header (matches existing affordances). */
 .batch-msg-fbhint { cursor: default; text-decoration: none; opacity: 0.85; }
 
+/* ─── Universal relevance feedback (Kunal 2026-06-09) ─────────────────
+   A quiet "⋯" dot per data point; click opens a small portaled popover with
+   the ONE structured action for that field. "less is more": no always-visible
+   buttons. */
+.rel-menu { display: inline-flex; align-items: center; }
+.rel-dot {
+  border: none;
+  background: transparent;
+  color: var(--t3);
+  cursor: pointer;
+  font-size: 14px;
+  line-height: 1;
+  padding: 0 4px;
+  border-radius: 6px;
+  opacity: 0.55;
+  transition: opacity 0.15s ease, color 0.15s ease, background 0.15s ease;
+}
+.rel-dot:hover, .rel-dot-open {
+  opacity: 1;
+  color: var(--t1);
+  background: var(--bg-warm);
+}
+/* The popover is portaled to <body> and fixed to the viewport (escapes
+   transformed card ancestors — see 2026-06-08 portal learnings). */
+.rel-pop {
+  position: fixed;
+  transform: translateX(-50%);
+  z-index: 60;
+  background: var(--bg);
+  border: 1px solid var(--line);
+  border-radius: 10px;
+  box-shadow: 0 8px 28px rgba(0, 0, 0, 0.18);
+  padding: 10px;
+  min-width: 180px;
+  max-width: 260px;
+}
+.rel-pop-label {
+  font-size: 11px;
+  color: var(--t3);
+  font-weight: 600;
+  margin-bottom: 7px;
+  line-height: 1.3;
+  word-break: break-word;
+}
+.rel-pop-action {
+  display: block;
+  width: 100%;
+  text-align: left;
+  border: 1px solid var(--line);
+  background: var(--bg-warm);
+  color: var(--t1);
+  font-size: 12px;
+  padding: 7px 10px;
+  border-radius: 8px;
+  cursor: pointer;
+}
+.rel-pop-action:hover { background: var(--line); }
+.rel-pop-score-row { display: flex; gap: 6px; align-items: center; }
+.rel-pop-score-input {
+  width: 72px;
+  font-size: 13px;
+  padding: 6px 8px;
+  border: 1px solid var(--line);
+  border-radius: 8px;
+  background: var(--bg-warm);
+  color: var(--t1);
+  font-family: 'JetBrains Mono', ui-monospace, monospace;
+}
+.rel-pop-go { font-size: 12px; padding: 6px 12px; }
+
+/* Per-field relevance row under the meta line — quiet, single line each. */
+.card-rel-row {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 4px 14px;
+  margin-top: 6px;
+}
+.card-rel-item { display: inline-flex; align-items: center; gap: 2px; }
+.card-rel-field { font-size: 11px; color: var(--t3); }
+.card-rel-hint { font-size: 11px; color: var(--t3); }
+.card-score-wrap { display: inline-flex; align-items: center; gap: 2px; }
+.card-movement-badge-row { display: flex; align-items: center; gap: 4px; margin-top: 10px; }
+/* the badge inside the row keeps its own margin-top off (row owns it now) */
+.card-movement-badge-row .card-movement-badge { margin-top: 0; }
+.card-signal-mute-row {
+  display: flex;
+  align-items: center;
+  gap: 2px;
+  margin-bottom: 6px;
+}
+
+/* Universal "Not needed" — a quiet tertiary action next to Done/Skip. */
+.btn.quiet.card-not-needed {
+  background: transparent;
+  border: 1px solid var(--line);
+  color: var(--t2);
+  font-weight: 500;
+}
+.btn.quiet.card-not-needed:hover:not(:disabled) {
+  background: var(--bg-warm);
+  color: var(--t1);
+}
+
+/* Toast: message + optional Undo button side by side. */
+.toast { display: inline-flex; align-items: center; gap: 12px; }
+.toast-msg { white-space: nowrap; }
+.toast-undo {
+  border: none;
+  background: rgba(255, 255, 255, 0.18);
+  color: var(--bg);
+  font-size: 12px;
+  font-weight: 600;
+  padding: 4px 10px;
+  border-radius: 6px;
+  cursor: pointer;
+}
+.toast-undo:hover { background: rgba(255, 255, 255, 0.3); }
+
 /* Subtle "highlight to give feedback" hint under the LinkedIn post summary +
    bullets (the now-wrapped FeedbackCapture surface). Low-noise, matches the
    batch hint tone. */

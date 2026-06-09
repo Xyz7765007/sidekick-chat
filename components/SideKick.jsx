@@ -439,6 +439,121 @@ function FeedbackCapture({ itemType, leadName, leadCompany, onSubmitted, childre
 }
 
 // ─────────────────────────────────────────────────────────────────────
+// RelevanceMenu — universal per-field relevance affordance (Kunal 2026-06-09)
+// A quiet "⋯" dot next to a data point. Click → a small portaled popover with
+// the ONE structured action that fits that field. Kept minimal: no
+// always-visible buttons, one dot per field. For the score field, `mode="score"`
+// renders an inline 0-100 input. The popover is `position:fixed` and MUST portal
+// to <body> — the card stack has transformed ancestors (.swipe-card /
+// .card-stack / .li-comment-card) that would otherwise re-base the fixed coords
+// (see 2026-06-08 portal learnings).
+// ─────────────────────────────────────────────────────────────────────
+function RelevanceMenu({ label, actionLabel, mode = "action", scoreInitial, onConfirm, title }) {
+  const dotRef = useRef(null);
+  const popRef = useRef(null);
+  const [open, setOpen] = useState(false);
+  const [pos, setPos] = useState({ x: 0, y: 0 });
+  const [scoreVal, setScoreVal] = useState(
+    typeof scoreInitial === "number" ? String(scoreInitial) : ""
+  );
+  const [mounted, setMounted] = useState(false);
+  useEffect(() => { setMounted(true); }, []);
+
+  // Dismiss on outside press — popRef is portaled to body (outside the dot's
+  // tree), so it must be excluded explicitly alongside the dot itself.
+  useEffect(() => {
+    if (!open) return;
+    function onDown(e) {
+      const inDot = dotRef.current && dotRef.current.contains(e.target);
+      const inPop = popRef.current && popRef.current.contains(e.target);
+      if (!inDot && !inPop) setOpen(false);
+    }
+    document.addEventListener("mousedown", onDown);
+    document.addEventListener("touchstart", onDown, { passive: true });
+    return () => {
+      document.removeEventListener("mousedown", onDown);
+      document.removeEventListener("touchstart", onDown);
+    };
+  }, [open]);
+
+  function toggle() {
+    if (open) { setOpen(false); return; }
+    const r = dotRef.current ? dotRef.current.getBoundingClientRect() : null;
+    if (r) {
+      const vw = typeof window !== "undefined" ? window.innerWidth : 1024;
+      const x = Math.max(140, Math.min(r.left, vw - 140));
+      setPos({ x, y: r.bottom + 6 });
+    }
+    setScoreVal(typeof scoreInitial === "number" ? String(scoreInitial) : "");
+    setOpen(true);
+  }
+
+  function confirmAction() {
+    setOpen(false);
+    if (mode === "score") {
+      const n = parseInt(scoreVal, 10);
+      if (Number.isNaN(n)) return;
+      onConfirm(Math.max(0, Math.min(100, n)));
+    } else {
+      onConfirm();
+    }
+  }
+
+  const overlay = open ? (
+    <div
+      ref={popRef}
+      className="rel-pop"
+      style={{ left: pos.x, top: pos.y }}
+    >
+      <div className="rel-pop-label">{label}</div>
+      {mode === "score" ? (
+        <div className="rel-pop-score-row">
+          <input
+            type="number"
+            min={0}
+            max={100}
+            value={scoreVal}
+            autoFocus
+            className="rel-pop-score-input"
+            placeholder="0–100"
+            onChange={(e) => setScoreVal(e.target.value)}
+            onKeyDown={(e) => {
+              if (e.key === "Enter") { e.preventDefault(); confirmAction(); }
+              if (e.key === "Escape") { e.preventDefault(); setOpen(false); }
+            }}
+          />
+          <button
+            type="button"
+            className="btn primary rel-pop-go"
+            onClick={confirmAction}
+            disabled={scoreVal.trim() === ""}
+          >{actionLabel}</button>
+        </div>
+      ) : (
+        <button type="button" className="rel-pop-action" onClick={confirmAction}>
+          {actionLabel}
+        </button>
+      )}
+    </div>
+  ) : null;
+
+  return (
+    <span className="rel-menu">
+      <button
+        type="button"
+        ref={dotRef}
+        className={`rel-dot ${open ? "rel-dot-open" : ""}`}
+        onClick={toggle}
+        title={title || "Give relevance feedback"}
+        aria-label={title || "Give relevance feedback"}
+      >⋯</button>
+      {mounted && typeof document !== "undefined" && overlay &&
+        createPortal(overlay, document.body)}
+    </span>
+  );
+}
+
+// ─────────────────────────────────────────────────────────────────────
 // Signal text formatter
 // Server delivers the signal as one big paragraph with emoji markers
 // inline (→, 📝, 💬, 🔍, 💡, 📊, 📋, •). Operators were getting walls of
@@ -515,6 +630,11 @@ export default function SideKick() {
   const [fetchError, setFetchError] = useState(null);
   const [leaving, setLeaving] = useState(new Set());
   const [toast, setToast] = useState("");
+  // Optional Undo affordance attached to the current toast (relevance
+  // suppression). Shape: { label, onUndo } | null. Lives alongside `toast`
+  // so the same show/hide timing drives both.
+  const [toastUndo, setToastUndo] = useState(null);
+  const toastTimerRef = useRef(null);
 
   // Sticky top card — see render block. Locks the visible card until it's
   // gone from the feed (user actioned it OR server removed it). Stored in
@@ -980,9 +1100,14 @@ export default function SideKick() {
   }, [commentData, refreshCommentPrefs]);
 
   // ─── Toast helper ───────────────────────────────────────────────
-  function showToast(msg, ms = 2400) {
+  function showToast(msg, ms = 2400, undo = null) {
+    if (toastTimerRef.current) clearTimeout(toastTimerRef.current);
     setToast(msg);
-    setTimeout(() => setToast(""), ms);
+    setToastUndo(undo);
+    toastTimerRef.current = setTimeout(() => {
+      setToast("");
+      setToastUndo(null);
+    }, ms);
   }
 
   // ─── Action handler (Mark Done / Skip) ──────────────────────────
@@ -1172,6 +1297,121 @@ export default function SideKick() {
     }
     if (itemType === "comment") refreshCommentPrefs();
     showToast("Feedback saved — future drafts will use it.");
+  }
+
+  // ─── Universal relevance feedback (Kunal 2026-06-09) ────────────
+  // Structured suppress/adjust rules on any data point of a card.
+  // Backend enforces hard-suppress retroactively; after each create we
+  // refetch the feed so suppressed leads visibly disappear. Reversible
+  // via the Undo button on the toast (deactivates the just-created rule).
+  async function deactivateRule(ruleId) {
+    try {
+      const r = await fetch("/api/relevance", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ ruleId, active: false }),
+      });
+      const d = await r.json().catch(() => ({}));
+      if (d?.ok !== false) {
+        showToast("Undone — rule removed.");
+        await fetchFeed();
+      } else {
+        showToast("Couldn't undo — try again", 3000);
+      }
+    } catch {
+      showToast("Couldn't undo — network error", 3000);
+    }
+  }
+
+  // Create a relevance rule. `okToast` is the success message; on success we
+  // refetch the feed (retroactive suppression made visible) and surface an
+  // Undo that deactivates the created rule.
+  async function createRelevanceRule(payload, okToast) {
+    try {
+      const r = await fetch("/api/relevance", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify(payload),
+      });
+      const d = await r.json().catch(() => ({}));
+      if (d?.needsSetup) {
+        showToast("Relevance rules not set up yet — ping admin", 3500);
+        return;
+      }
+      if (d?.ok === false || !r.ok) {
+        showToast(`Couldn't save — ${d?.error || "try again"}`, 3500);
+        return;
+      }
+      await fetchFeed();
+      const undo = d?.id ? { label: "Undo", onUndo: () => deactivateRule(d.id) } : null;
+      showToast(okToast, 5000, undo);
+    } catch (e) {
+      showToast(`Network error: ${e.message}`, 3500);
+    }
+  }
+
+  // Per-field structured actions (see RelevanceMenu). Each maps a card field
+  // to the right `kind`. For Exited movement cards `company` is the OLD
+  // employer — send the real company name, not the "Ex-" display prefix.
+  function suppressTitle(card) {
+    if (!card.lead_title) return;
+    createRelevanceRule(
+      { kind: "title_irrelevant", value: card.lead_title },
+      `Hiding "${card.lead_title}" titles`
+    );
+  }
+  function suppressCompany(card) {
+    if (!card.company) return;
+    createRelevanceRule(
+      { kind: "company_irrelevant", value: card.company },
+      `Hiding ${card.company}`
+    );
+  }
+  function suppressSignal(card) {
+    const value = card.movement_type || card.task_type;
+    if (!value) return;
+    createRelevanceRule(
+      { kind: "signal_irrelevant", value },
+      `Muting "${value}" signals`
+    );
+  }
+  function adjustScore(card, targetScore) {
+    const n = Math.max(0, Math.min(100, parseInt(targetScore, 10)));
+    if (Number.isNaN(n) || !card.lead_title) return;
+    createRelevanceRule(
+      { kind: "role_fit", value: card.lead_title, targetScore: n },
+      `Set ${card.lead_title} fit to ${n}`
+    );
+  }
+
+  // Universal "Not needed" — NOT a rule. A per-task skip (advances the stack)
+  // with a note so the backend can distinguish it from a plain skip.
+  async function markNotNeeded(card) {
+    const taskId = card.id;
+    setLeaving((s) => new Set([...s, taskId]));
+    try {
+      const r = await fetch("/api/action", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ taskId, action: "skip", notes: "not needed" }),
+      });
+      const data = await r.json();
+      if (data.ok) {
+        setTimeout(() => {
+          setCards((c) => c.filter((cc) => cc.id !== taskId));
+          setCount((n) => { const nn = Math.max(0, n - 1); countRef.current = nn; return nn; });
+          setLeaving((s) => { const ns = new Set(s); ns.delete(taskId); return ns; });
+          if (stickyTopIdRef.current === taskId) stickyTopIdRef.current = null;
+        }, 300);
+        showToast("Marked not needed");
+      } else {
+        setLeaving((s) => { const ns = new Set(s); ns.delete(taskId); return ns; });
+        showToast(`Error: ${data.error || "Action failed"}`, 4000);
+      }
+    } catch (e) {
+      setLeaving((s) => { const ns = new Set(s); ns.delete(taskId); return ns; });
+      showToast(`Network error: ${e.message}`, 4000);
+    }
   }
 
   // ─── Email draft (pt4 V1: draft + edit + copy, NO send) ─────────
@@ -1434,6 +1674,7 @@ Best,
                     commentPrefs={commentPrefsRef}
                     isFocused={topIsFocused}
                     onCopied={(msg) => showToast(msg, 2600)}
+                    onNotNeeded={markNotNeeded}
                   />
                 ) : (
                   <Card
@@ -1449,6 +1690,12 @@ Best,
                     onSetFocus={handleSetFocus}
                     onDraftEmail={handleDraftEmail}
                     isFocused={topIsFocused}
+                    onSuppressTitle={suppressTitle}
+                    onSuppressCompany={suppressCompany}
+                    onSuppressSignal={suppressSignal}
+                    onAdjustScore={adjustScore}
+                    onNotNeeded={markNotNeeded}
+                    onFeedbackSubmitted={handleFeedbackSubmitted}
                   />
                 )}
               </SwipeCard>
@@ -1520,7 +1767,24 @@ Best,
         />
       )}
 
-      <div className={`toast ${toast ? "show" : ""}`}>{toast}</div>
+      <div className={`toast ${toast ? "show" : ""}`}>
+        <span className="toast-msg">{toast}</span>
+        {toastUndo && (
+          <button
+            type="button"
+            className="toast-undo"
+            onClick={() => {
+              const fn = toastUndo.onUndo;
+              if (toastTimerRef.current) clearTimeout(toastTimerRef.current);
+              setToast("");
+              setToastUndo(null);
+              fn?.();
+            }}
+          >
+            {toastUndo.label || "Undo"}
+          </button>
+        )}
+      </div>
     </>
   );
 }
@@ -1850,7 +2114,7 @@ function ScanBanner({ status, concurrentRunsCount = 0 }) {
   return null;
 }
 
-function Card({ card, leaving, enriching, subject, meta, summary, onAction, onEnrichPhone, onSetFocus, onDraftEmail, isFocused }) {
+function Card({ card, leaving, enriching, subject, meta, summary, onAction, onEnrichPhone, onSetFocus, onDraftEmail, isFocused, onSuppressTitle, onSuppressCompany, onSuppressSignal, onAdjustScore, onNotNeeded, onFeedbackSubmitted }) {
   const hasLink = !!card.url;
   const hasPhone = !!card.lead_phone;
   const hasLinkedIn = !!card.lead_linkedin && card.lead_linkedin !== card.url;
@@ -1887,6 +2151,16 @@ function Card({ card, leaving, enriching, subject, meta, summary, onAction, onEn
   const hasSignal = !!card.signal;
   const summaryIsReady = summary && summary !== "loading" && summary !== "error";
 
+  // Relevance affordances — the real company is the stored `company` even on an
+  // Exited card (the meta DISPLAYS it as "Ex-…", but the suppress rule must use
+  // the real name). Signal-mute value = movement_type for movement cards, else
+  // task_type. Guard each affordance on the field actually existing.
+  const canTitleFb = !!onSuppressTitle && !!card.lead_title;
+  const canCompanyFb = !!onSuppressCompany && !!card.company;
+  const canScoreFb = !!onAdjustScore && !!card.lead_title && typeof card.score === "number";
+  const signalMuteValue = card.movement_type || card.task_type;
+  const canSignalFb = !!onSuppressSignal && !!signalMuteValue;
+
   return (
     <div className={`card card-stack ${leaving ? "leaving" : "entering"}`}>
       {/* Type chip + score on top — small, low-noise */}
@@ -1896,8 +2170,20 @@ function Card({ card, leaving, enriching, subject, meta, summary, onAction, onEn
           {typeChip.label}
         </span>
         {typeof card.score === "number" && card.score > 0 && (
-          <span className="card-score-chip" title={`Composite score ${card.score}`}>
-            {card.score}
+          <span className="card-score-wrap">
+            <span className="card-score-chip" title={`Composite score ${card.score}`}>
+              {card.score}
+            </span>
+            {canScoreFb && (
+              <RelevanceMenu
+                mode="score"
+                title="Adjust fit score for this role"
+                label={`Right fit score for "${card.lead_title}"?`}
+                actionLabel="Set"
+                scoreInitial={card.score}
+                onConfirm={(n) => onAdjustScore(card, n)}
+              />
+            )}
           </span>
         )}
       </div>
@@ -1906,8 +2192,52 @@ function Card({ card, leaving, enriching, subject, meta, summary, onAction, onEn
       <div className="card-name">{subject}</div>
       {meta && <div className="card-meta">{meta}</div>}
 
+      {/* Per-field relevance affordances — quiet dots, each opens the ONE
+          structured action for that field (title/company). Kept off the meta
+          line itself so it stays readable; rendered as a low-noise row. */}
+      {(canTitleFb || canCompanyFb) && (
+        <div className="card-rel-row">
+          {canTitleFb && (
+            <span className="card-rel-item">
+              <span className="card-rel-field">{card.lead_title}</span>
+              <RelevanceMenu
+                title="Mark this title not relevant"
+                label={`"${card.lead_title}" titles`}
+                actionLabel="Mark this title not relevant"
+                onConfirm={() => onSuppressTitle(card)}
+              />
+            </span>
+          )}
+          {canCompanyFb && (
+            <span className="card-rel-item">
+              <span className="card-rel-field">
+                {card.movement_type === "Exited" ? `Ex-${card.company}` : card.company}
+              </span>
+              <RelevanceMenu
+                title="Mark this company not relevant"
+                label={`${card.company}`}
+                actionLabel="Mark this company not relevant"
+                onConfirm={() => onSuppressCompany(card)}
+              />
+            </span>
+          )}
+        </div>
+      )}
+
       {/* Movement badge — only for movement cards, sits below identity */}
-      {movementBadge && <div className="card-movement-badge">{movementBadge}</div>}
+      {movementBadge && (
+        <div className="card-movement-badge-row">
+          <span className="card-movement-badge">{movementBadge}</span>
+          {canSignalFb && (
+            <RelevanceMenu
+              title="Mute this signal type"
+              label={`"${signalMuteValue}" signals`}
+              actionLabel="Mute this signal type"
+              onConfirm={() => onSuppressSignal(card)}
+            />
+          )}
+        </div>
+      )}
 
       {/* Summary (AI-generated, default view) + View more data toggle.
           When summary is ready and showFullData is false, show the summary.
@@ -1916,13 +2246,34 @@ function Card({ card, leaving, enriching, subject, meta, summary, onAction, onEn
           Loading state: subtle placeholder so the card doesn't reflow. */}
       {hasSignal && (
         <div className="card-signal-block">
+          {/* Signal-mute affordance for cards WITHOUT a movement badge (top_x,
+              engagement). Movement cards already carry it on the badge row. */}
+          {canSignalFb && !movementBadge && (
+            <div className="card-signal-mute-row">
+              <span className="card-rel-hint">signal: {signalMuteValue}</span>
+              <RelevanceMenu
+                title="Mute this signal type"
+                label={`"${signalMuteValue}" signals`}
+                actionLabel="Mute this signal type"
+                onConfirm={() => onSuppressSignal(card)}
+              />
+            </div>
+          )}
           {!showFullData && summary === "loading" && (
             <div className="card-summary card-summary-loading">
               <span className="spinner spinner-sm" /> Generating SDR summary…
             </div>
           )}
           {!showFullData && summaryIsReady && (
-            <div className="card-summary">{summary}</div>
+            <FeedbackCapture
+              itemType="comment"
+              leadName={card.lead_name}
+              leadCompany={card.company}
+              onSubmitted={onFeedbackSubmitted}
+            >
+              <div className="card-summary">{summary}</div>
+              <div className="li-post-fbhint" aria-hidden="true">💬 highlight to give feedback</div>
+            </FeedbackCapture>
           )}
           {(showFullData || summary === "error") && (
             <div className="card-signal-text">
@@ -1969,6 +2320,17 @@ function Card({ card, leaving, enriching, subject, meta, summary, onAction, onEn
           >
             Skip
           </button>
+          {onNotNeeded && (
+            <button
+              className="btn quiet card-not-needed"
+              disabled={isDisabled}
+              onClick={() => onNotNeeded(card)}
+              title="Not needed — skip this task and move on"
+              type="button"
+            >
+              Not needed
+            </button>
+          )}
         </div>
         <div className="card-actions-secondary">
           {/* pt7: put this lead in focus for chat (or clear it) */}
@@ -2056,6 +2418,7 @@ function Card({ card, leaving, enriching, subject, meta, summary, onAction, onEn
 function LinkedInCommentCard({
   card, leaving, subject, meta, commentData,
   onRequestAngles, onAction, onSetFocus, onFeedbackSubmitted, commentPrefs, isFocused, onCopied,
+  onNotNeeded,
 }) {
   const isDisabled = leaving;
   const postUrl = card.url || card.lead_linkedin || "";
@@ -2283,6 +2646,17 @@ function LinkedInCommentCard({
           <button className="btn danger" disabled={isDisabled} onClick={() => onAction(card.id, "skip")}>
             Skip
           </button>
+          {onNotNeeded && (
+            <button
+              className="btn quiet card-not-needed"
+              disabled={isDisabled}
+              onClick={() => onNotNeeded(card)}
+              title="Not needed — skip this task and move on"
+              type="button"
+            >
+              Not needed
+            </button>
+          )}
         </div>
         <div className="card-actions-secondary">
           {onSetFocus && (card.lead_name || card.company) && (
