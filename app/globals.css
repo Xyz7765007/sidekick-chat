@@ -987,26 +987,6 @@ body { position: relative; }
   flex-wrap: wrap;
 }
 
-/* ═══════════════════════════════════════════════════════════════════
-   TOP CALLABLE CARD — server-curated, with why-now reasons
-   ═══════════════════════════════════════════════════════════════════ */
-.callable-reasons {
-  margin: 10px 0 12px;
-  padding: 10px 12px;
-  background: var(--bg-warm);
-  border-left: 2px solid var(--warn);
-  border-radius: 0 6px 6px 0;
-}
-.callable-reason {
-  font-size: 12.5px;
-  color: var(--t1);
-  margin-bottom: 3px;
-  line-height: 1.5;
-  white-space: pre-wrap;
-  word-break: break-word;
-}
-.callable-reason:last-child { margin-bottom: 0; }
-
 /* Mobile tweaks */
 @media (max-width: 520px) {
   .batch-card { padding: 16px; }
@@ -1080,7 +1060,6 @@ body { position: relative; }
 }
 .card-type-icon { font-size: 13px; }
 .card-type-movement { color: var(--acc-deep); }
-.card-type-callable { color: var(--acc); }
 .card-type-li       { color: #8B6FB0; }
 .card-type-ga       { color: var(--pos); }
 .card-type-top      { color: var(--warn); }

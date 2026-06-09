@@ -452,9 +452,8 @@ function FeedbackCapture({ itemType, leadName, leadCompany, onSubmitted, childre
 function formatSignalText(raw) {
   if (!raw || typeof raw !== "string") return raw;
   // Markers that each start a new line. Notes on the alternation:
-  //   - `🔗` is a marker on its own — TopCallableCard prepends `→ ` in JSX
-  //     so the reason text starts with bare `🔗`. Card stack mode's signal
-  //     can have `→ 🔗` together; lookahead on `→` prevents splitting them.
+  //   - `🔗` is a marker on its own. Card stack mode's signal can have
+  //     `→ 🔗` together; lookahead on `→` prevents splitting them.
   //   - `→(?!\s*🔗)` matches `→` only when NOT followed by `🔗`, so the
   //     header arrow on movement cards ("→ ICP fit (80/100)") still acts
   //     as a section break for any subsequent → blocks in the same text.
@@ -573,12 +572,6 @@ export default function SideKick() {
     commentPrefsLoadedRef.current = true;
   }, []);
 
-  // Session-only dismissals for top-callable cards. These items reference
-  // Lead records (not Task records), so the standard /api/action handler
-  // can't stamp them as Handled. Until a dedicated dismiss-callable
-  // endpoint exists, dismissed top-callable leads are tracked here and
-  // filtered out of the stack for the rest of the session. Reload resets.
-  const [dismissedCallableIds, setDismissedCallableIds] = useState(new Set());
 
   // Chat state — initialized empty, populated from Airtable on mount
   const [messages, setMessages] = useState([]);
@@ -624,23 +617,11 @@ export default function SideKick() {
   const [editingDraft, setEditingDraft] = useState(null); // { recordId, field, text }
   const [batchGenerating, setBatchGenerating] = useState(false);
 
-  // Top callable leads — curated by composite scoring on the server
-  // (replaces old "any task with phone" filter). Refreshed on each feed poll.
-  const [topCallable, setTopCallable] = useState([]);
-
   const fetchAutoBatches = useCallback(async () => {
     try {
       const r = await fetch("/api/auto-batch/pending", { cache: "no-store" });
       const data = await r.json();
       if (data.ok) setAutoBatches(data.batches || []);
-    } catch {}
-  }, []);
-
-  const fetchTopCallable = useCallback(async () => {
-    try {
-      const r = await fetch("/api/top-leads-to-call?n=2", { cache: "no-store" });
-      const data = await r.json();
-      if (data.ok) setTopCallable(data.cards || []);
     } catch {}
   }, []);
 
@@ -769,15 +750,13 @@ export default function SideKick() {
   useEffect(() => {
     fetchFeed();
     fetchAutoBatches();
-    fetchTopCallable();
     loadHistory();
     const i = setInterval(() => {
       fetchFeed();
       fetchAutoBatches();
-      fetchTopCallable();
     }, POLL_INTERVAL_MS);
     return () => clearInterval(i);
-  }, [fetchFeed, fetchAutoBatches, fetchTopCallable, loadHistory]);
+  }, [fetchFeed, fetchAutoBatches, loadHistory]);
 
   // ─── Movement scan status polling ───────────────────────────────
   // Polls every 20s when running (active progress); 60s when idle.
@@ -873,10 +852,10 @@ export default function SideKick() {
   // Clear the top-card ref when the feed is empty so a keyboard shortcut
   // can't fire Done/Skip on an already-removed card. The render IIFE clears
   // it on its own empty path (sortedStack === 0), but it is NOT entered at
-  // all when both cards and topCallable are empty — this covers that path.
+  // all when cards is empty — this covers that path.
   useEffect(() => {
-    if (cards.length === 0 && topCallable.length === 0) topCardRef.current = null;
-  }, [cards, topCallable]);
+    if (cards.length === 0) topCardRef.current = null;
+  }, [cards]);
 
   // ─── Lazy AI summary fetch ──────────────────────────────────────
   // When the visible top card changes (sticky pin advanced), fire a
@@ -888,30 +867,13 @@ export default function SideKick() {
   // render IIFE — keeping them in sync. This duplicates a few lines
   // but is cheaper than restructuring the whole component.
   useEffect(() => {
-    if (cards.length === 0 && topCallable.length === 0) return;
+    if (cards.length === 0) return;
     // Mirror the render-side stack composition to find the top card id.
-    // Filter dismissed callable leads — same filter the render uses.
-    const visibleCallable = topCallable.filter(l => !dismissedCallableIds.has(l.id));
-    const topCallableCards = visibleCallable.map(lead => ({
-      id: lead.id,
-      task_type: "top_callable",
-      score: lead.score,
-      lead_name: lead.lead_name,
-      lead_title: lead.lead_title,
-      company: lead.company,
-      signal: (lead.reasons || []).map(r => `→ ${r}`).join("\n\n"),
-      reasons: lead.reasons || [],
-      has_movement: lead.has_movement,
-      movement_type: lead.movement_type,
-    }));
-    const tcKey = c => `${(c.lead_name || "").toLowerCase().trim()}|${(c.company || "").toLowerCase().trim()}`;
-    const tcKeys = new Set(topCallableCards.map(tcKey).filter(k => k !== "|"));
-    const merged = [...topCallableCards, ...cards.filter(c => !tcKeys.has(tcKey(c)))];
+    const merged = [...cards];
     if (merged.length === 0) return;
 
     const priorityOf = c => ({
       lead_movement: 0,
-      top_callable: 1,
       top_x: 2,
       linkedin_engagement: 3,
       engagement: 4,
@@ -968,7 +930,7 @@ export default function SideKick() {
       .finally(() => {
         pendingSummariesRef.current.delete(target.id);
       });
-  }, [cards, topCallable, dismissedCallableIds]);
+  }, [cards]);
 
   // ─── Lazy comment-angle fetch (item 1) ──────────────────────────
   // When the visible top card is a LinkedIn-engagement card, fetch the
@@ -1024,34 +986,11 @@ export default function SideKick() {
   }
 
   // ─── Action handler (Mark Done / Skip) ──────────────────────────
-  // Two paths:
-  //   1. Regular task cards (top_x, lead_movement, engagement,
-  //      linkedin_engagement) → POST /api/action → SignalScope stamps
-  //      the Task record with Handled At/As/Notes fields.
-  //   2. Top-callable cards → the id references a LEAD record (from the
-  //      Leads table), NOT a Task record. PATCHing /api/action on a
-  //      Lead id would 422 (or 404). For now we dismiss them client-side
-  //      and add the lead id to `dismissedCallableIds` so the next poll
-  //      doesn't bring them back during this session. A persistent
-  //      server-side dismissal would need a new endpoint that marks the
-  //      lead's underlying movement/top_x tasks as handled — deferred.
+  // Regular task cards (top_x, lead_movement, engagement,
+  // linkedin_engagement) → POST /api/action → SignalScope stamps
+  // the Task record with Handled At/As/Notes fields.
   async function handleAction(taskId, action) {
     setLeaving((s) => new Set([...s, taskId]));
-
-    // Is this a top-callable card? Check the merged feed.
-    const isTopCallable = topCallable.some(l => l.id === taskId);
-    if (isTopCallable) {
-      setDismissedCallableIds(prev => new Set([...prev, taskId]));
-      setTimeout(() => {
-        // Clear sticky so next poll's top card promotes correctly
-        if (stickyTopIdRef.current === taskId) {
-          stickyTopIdRef.current = null;
-        }
-        setLeaving((s) => { const ns = new Set(s); ns.delete(taskId); return ns; });
-      }, 300);
-      showToast(action === "done" ? "Marked done ✓ (session-only)" : "Skipped (session-only)");
-      return;
-    }
 
     try {
       const r = await fetch("/api/action", {
@@ -1420,64 +1359,19 @@ Best,
             Per May 20 client feedback ("check how it was for truffle"
             = the Biscuit prototype from the May 7 chat): one task in
             focus, action taken → next loads. No parallel sections
-            cluttering the view.
-
-            The top-leads-to-call items used to live in their own
-            Section above the stack. We now fold them in as a new
-            `top_callable` task type at the highest non-movement
-            priority, so the operator works through ONE pipeline
-            instead of jumping between sections. */}
-        {!loading && !fetchError && (cards.length > 0 || topCallable.length > 0) && (() => {
-          // Convert each top-callable lead into a card-shape so it
-          // flows through the same Card component as movement / top_x
-          // / etc. The `signal` field is joined from reasons[] so it
-          // gets the same formatSignalText + ExpandableSignal treatment.
-          // Drop any leads the operator dismissed this session — those
-          // can't be persisted server-side yet (top-callable points to
-          // Lead records, not Tasks) so we just hide them locally.
-          const visibleCallable = topCallable.filter(l => !dismissedCallableIds.has(l.id));
-          const topCallableCards = visibleCallable.map(lead => ({
-            id: lead.id,
-            task_type: "top_callable",
-            score: lead.score,
-            lead_name: lead.lead_name,
-            lead_title: lead.lead_title,
-            company: lead.company,
-            lead_phone: lead.lead_phone,
-            lead_phone_type: lead.lead_phone_type,
-            lead_linkedin: lead.lead_linkedin,
-            lead_email: lead.lead_email,
-            needs_phone_enrich: lead.needs_phone_enrich,
-            has_movement: lead.has_movement,
-            movement_type: lead.movement_type,
-            // Pre-join reasons into a single signal block. JSX no longer
-            // prepends `→ ` since Card renders `card.signal` raw.
-            signal: (lead.reasons || []).map(r => `→ ${r}`).join("\n\n"),
-            reasons: lead.reasons || [],
-            source: "top callable",
-          }));
-
-          // Merge with regular cards. Dedup by name+company so a lead
-          // that's both top-callable AND has a top_x task only appears
-          // once (top_callable wins — it's the more curated path).
-          const topCallableKey = c => `${(c.lead_name || "").toLowerCase().trim()}|${(c.company || "").toLowerCase().trim()}`;
-          const topCallableKeys = new Set(topCallableCards.map(topCallableKey).filter(k => k !== "|"));
-          const filteredCards = cards.filter(c => !topCallableKeys.has(topCallableKey(c)));
-          const allCards = [...topCallableCards, ...filteredCards];
+            cluttering the view. */}
+        {!loading && !fetchError && cards.length > 0 && (() => {
+          const allCards = [...cards];
 
           if (allCards.length === 0) { topCardRef.current = null; return null; }
 
-          // Priority groups. top_callable sits just below movement
-          // because phone-ready leads with high composite are the
-          // highest-yield action an SDR can take.
+          // Priority groups.
           const movements   = allCards.filter(c => c.task_type === "lead_movement");
-          const callable    = allCards.filter(c => c.task_type === "top_callable");
           const topLeads    = allCards.filter(c => c.task_type === "top_x");
           const liComments  = allCards.filter(c => c.task_type === "linkedin_engagement");
           const gaVisitors  = allCards.filter(c => c.task_type === "engagement");
           const accountedFor = new Set([
             ...movements.map(c => c.id),
-            ...callable.map(c => c.id),
             ...topLeads.map(c => c.id),
             ...liComments.map(c => c.id),
             ...gaVisitors.map(c => c.id),
@@ -1487,7 +1381,6 @@ Best,
           const byScore = (a, b) => (b.score || 0) - (a.score || 0);
           const sortedStack = [
             ...movements.sort(byScore),
-            ...callable.sort(byScore),
             ...topLeads.sort(byScore),
             ...liComments.sort(byScore),
             ...gaVisitors.sort(byScore),
@@ -1515,11 +1408,10 @@ Best,
 
           const breakdown = {
             movements: remaining.filter(c => c.task_type === "lead_movement").length,
-            callable:  remaining.filter(c => c.task_type === "top_callable").length,
             top:       remaining.filter(c => c.task_type === "top_x").length,
             comments:  remaining.filter(c => c.task_type === "linkedin_engagement").length,
             ga:        remaining.filter(c => c.task_type === "engagement").length,
-            other:     remaining.filter(c => !["lead_movement", "top_callable", "top_x", "linkedin_engagement", "engagement"].includes(c.task_type)).length,
+            other:     remaining.filter(c => !["lead_movement", "top_x", "linkedin_engagement", "engagement"].includes(c.task_type)).length,
           };
 
           const topIsFocused = focusLead && focusLead.lead_name === topCard.lead_name && focusLead.company === topCard.company;
@@ -1979,7 +1871,6 @@ function Card({ card, leaving, enriching, subject, meta, summary, onAction, onEn
   // Replaces the old section header (since stack mode merges all sections).
   const typeChip = ({
     lead_movement:       { icon: "📈", label: "Movement",     tone: "movement" },
-    top_callable:        { icon: "📞", label: "Top to call",  tone: "callable" },
     linkedin_engagement: { icon: "💬", label: "LinkedIn",     tone: "li" },
     engagement:          { icon: "🌐", label: "Site visit",   tone: "ga" },
     top_x:               { icon: "🎯", label: "Top lead",     tone: "top" },
@@ -2422,7 +2313,6 @@ function LinkedInCommentCard({
 function QueueIndicator({ count, breakdown }) {
   const chips = [
     breakdown.movements > 0 && { icon: "📈", label: `${breakdown.movements} movement${breakdown.movements > 1 ? "s" : ""}` },
-    breakdown.callable  > 0 && { icon: "📞", label: `${breakdown.callable} top to call` },
     breakdown.top       > 0 && { icon: "🎯", label: `${breakdown.top} top lead${breakdown.top > 1 ? "s" : ""}` },
     breakdown.comments  > 0 && { icon: "💬", label: `${breakdown.comments} LinkedIn` },
     breakdown.ga        > 0 && { icon: "🌐", label: `${breakdown.ga} site visit${breakdown.ga > 1 ? "s" : ""}` },
@@ -2723,82 +2613,6 @@ function BatchLeadCard({ lead, index, total, onSend, onSkip, onEdit, editingDraf
       <div className="batch-lead-ctas">
         <button className="btn primary" onClick={onSend}>✓ Send this lead</button>
         <button className="btn danger" onClick={onSkip}>⏭ Skip</button>
-      </div>
-    </div>
-  );
-}
-
-// ═══════════════════════════════════════════════════════════════════
-// TOP CALLABLE CARD
-// Curated by composite score on the server (movement preempts → GA +
-// LinkedIn engagement → base score). Phone is NOT required — if absent,
-// shows "Enrich Phone" CTA instead of "Call".
-// ═══════════════════════════════════════════════════════════════════
-function TopCallableCard({ lead, enriching, onEnrichPhone }) {
-  const reasons = lead.reasons || [];
-  const hasPhone = !!lead.lead_phone;
-
-  return (
-    <div className="card entering">
-      <div className="card-top">
-        <div>
-          <div className="subject">{lead.lead_name}</div>
-          <div className="subject-meta">
-            {[lead.lead_title, lead.company].filter(Boolean).join(" · ")}
-          </div>
-          {lead.has_movement && lead.movement_type && (
-            <div className={`movement-badge badge-${lead.movement_type.toLowerCase()}`}>
-              🔥 {lead.movement_type === "Hired" ? "NEW HIRE" : lead.movement_type === "Promoted" ? "PROMOTED" : "EXITED"}
-            </div>
-          )}
-        </div>
-        {typeof lead.score === "number" && (
-          <div
-            className="score"
-            title={buildScoreTooltip(lead)}
-          >
-            <span className="score-label">SCORE</span>
-            {lead.score}
-          </div>
-        )}
-      </div>
-
-      {reasons.length > 0 && (
-        <div className="callable-reasons">
-          {/* Join all reasons into one structured block. Each reason is
-              prefixed with `→` and they're separated by a blank line. The
-              whole block is collapsed at 8 lines so multi-post reasons
-              (e.g. Rahul's 2 posts × ~8 sections each) don't dominate.
-              `ExpandableSignal` adds the Show more / Show less toggle. */}
-          <div className="callable-reason">
-            <ExpandableSignal
-              text={reasons.map(r => `→ ${formatSignalText(r)}`).join("\n\n")}
-              threshold={8}
-            />
-          </div>
-        </div>
-      )}
-
-      <div className="ctas">
-        {lead.lead_linkedin && (
-          <a className="btn" href={lead.lead_linkedin} target="_blank" rel="noopener noreferrer">
-            in LinkedIn
-          </a>
-        )}
-        {hasPhone ? (
-          <a className="btn primary" href={`tel:${lead.lead_phone}`}>
-            ☎ Call {lead.lead_phone}
-          </a>
-        ) : (
-          <button
-            className="btn primary"
-            disabled={enriching}
-            onClick={onEnrichPhone}
-            title="Use Apollo to find this lead's phone number"
-          >
-            {enriching ? <><span className="spinner spinner-sm" /> Enriching…</> : "☎ Enrich Phone"}
-          </button>
-        )}
       </div>
     </div>
   );
