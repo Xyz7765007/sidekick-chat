@@ -20,7 +20,9 @@
 // description of the post only and to NEVER surface scores / rule names /
 // internal jargon. NO auto-post — this route only returns text.
 //
-// Bounded input (post text capped at 2000 chars). Haiku 4.5.
+// Model: COMMENT_MODEL (default claude-sonnet-4-6) — same model that picks
+// the angles, so the written comment matches the angle's reasoning quality.
+// Bounded input (post text capped at 4000 chars — full post for grounding).
 // ═══════════════════════════════════════════════════════════════════
 
 export const dynamic = "force-dynamic";
@@ -28,9 +30,9 @@ export const fetchCache = "force-no-store";
 export const maxDuration = 30;
 
 const ANTHROPIC_API_KEY = process.env.ANTHROPIC_API_KEY;
-const SUMMARY_MODEL = process.env.SUMMARY_MODEL || "claude-haiku-4-5-20251001";
+const COMMENT_MODEL = process.env.COMMENT_MODEL || "claude-sonnet-4-6";
 
-const POST_TEXT_CAP = 2000;
+const POST_TEXT_CAP = 4000;
 const FEEDBACK_BLOCK_CHAR_CAP = 1500;
 
 // Build a bounded "OPERATOR FEEDBACK" block from learned prefs. Capped at
@@ -101,7 +103,7 @@ export async function POST(request) {
     return Response.json({ ok: false, error: "Invalid JSON" }, { status: 400 });
   }
 
-  const { lead_name, company, lead_title, signal, url, angle, feedback } = body || {};
+  const { lead_name, company, lead_title, signal, url, angle, feedback, regenerate } = body || {};
   const postText = typeof signal === "string" ? signal.slice(0, POST_TEXT_CAP) : "";
   const angleLabel = angle?.label ? String(angle.label).slice(0, 80) : "";
   const angleHint = angle?.hint ? String(angle.hint).slice(0, 240) : "";
@@ -134,8 +136,10 @@ export async function POST(request) {
         "anthropic-version": "2023-06-01",
       },
       body: JSON.stringify({
-        model: SUMMARY_MODEL,
+        model: COMMENT_MODEL,
         max_tokens: 400,
+        // Regenerate → run hotter so the rewritten comment actually varies.
+        temperature: regenerate ? 0.9 : 0.6,
         system: SYSTEM_PROMPT,
         messages: [{ role: "user", content: contextBlock }],
       }),

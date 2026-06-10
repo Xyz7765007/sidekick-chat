@@ -14,7 +14,13 @@
 // to NEVER surface scores, rule names, or internal jargon. The downstream
 // generate-comment route does the same.
 //
-// Cheap path: Haiku 4.5. Bounded input (post text capped at 2000 chars).
+// Model: COMMENT_MODEL (default claude-sonnet-4-6). Reasoning quality
+// matters here — Haiku produced generic, indistinct angles (Kunal: "none of
+// these made sense"). Sonnet grounds the angles in the post's actual
+// substance. generate-comment uses the SAME model. summarize stays on Haiku.
+// Bounded input (post text capped at 4000 chars — Kunal item 16: give the
+// model the FULL post so angles are grounded and the operator never has to
+// leave the app to read it).
 // ═══════════════════════════════════════════════════════════════════
 
 export const dynamic = "force-dynamic";
@@ -22,9 +28,9 @@ export const fetchCache = "force-no-store";
 export const maxDuration = 30;
 
 const ANTHROPIC_API_KEY = process.env.ANTHROPIC_API_KEY;
-const SUMMARY_MODEL = process.env.SUMMARY_MODEL || "claude-haiku-4-5-20251001";
+const COMMENT_MODEL = process.env.COMMENT_MODEL || "claude-sonnet-4-6";
 
-const POST_TEXT_CAP = 2000;
+const POST_TEXT_CAP = 4000;
 const FEEDBACK_BLOCK_CHAR_CAP = 1500;
 
 // Bounded "OPERATOR FEEDBACK" block from learned comment prefs. Same
@@ -49,26 +55,49 @@ function buildFeedbackBlock(feedback) {
   return `OPERATOR FEEDBACK — past preferences on comments (bias the angles toward these, most recent first):\n${lines.join("\n")}`;
 }
 
-const SYSTEM_PROMPT = `You help a B2B operator decide how to comment on a LinkedIn post so the comment starts a real conversation (not empty praise).
+const SYSTEM_PROMPT = `You help a B2B operator decide how to comment on a specific LinkedIn post so the comment starts a real conversation and makes the operator look insightful. Empty praise is worthless — the operator wants angles they could actually defend in a reply thread.
 
-You are given context about a LinkedIn post and its author. Some of that context may contain internal sales-scoring jargon (numeric scores out of 100, rule names, "ICP fit", etc.). NEVER repeat any of that — it is internal-only. Treat the input purely as a description of what the post is ABOUT and who the author is.
+You are given the FULL text of the post plus context about its author. Some context may contain internal sales-scoring jargon (numeric scores out of 100, rule names, "ICP fit", etc.). NEVER repeat any of that — it is internal-only. Treat the input purely as a description of what the post is ABOUT and who the author is.
+
+Read the post closely. Ground every angle in the SPECIFIC substance of THIS post — its claim, example, number, or framing — not in generic LinkedIn engagement tactics. If you could paste an angle under any post, it is too generic and is WRONG.
 
 Return STRICT JSON ONLY (no markdown, no prose, no code fences) with this exact shape:
 {
-  "summary": "<1 sentence, max ~30 words, what the post is about>",
+  "summary": "<1 sentence, max ~30 words, what the post is actually about>",
   "bullets": ["<short phrase>", "<short phrase>", "<short phrase>"],
   "angles": [
-    { "id": "a1", "label": "<3-5 word angle name>", "hint": "<1 sentence on the take to make>" },
+    { "id": "a1", "label": "<3-5 word angle name>", "hint": "<1 sentence: the actual take to make, referencing something specific from the post>" },
     { "id": "a2", "label": "...", "hint": "..." },
     { "id": "a3", "label": "...", "hint": "..." }
   ]
 }
 
-Rules:
-- EXACTLY 3 angles. Each must be genuinely DISTINCT — a different lens, not three rewordings.
-- NO generic "great post / I agree / well said / thanks for sharing" angles. Each angle must add a point of view: a sharpening, a counter, a concrete example, a question that extends the idea, a related tension, etc.
-- bullets: 2-4 short phrases capturing what the post covers. No scores, no rule names.
-- Keep everything concise and concrete. Output ONLY the JSON object.`;
+Rules for the 3 angles:
+- EXACTLY 3, and genuinely DISTINCT — three different lenses on the post, never three rewordings of the same point.
+- Cover three DIFFERENT kinds of contribution. Aim for one of each where the post allows it:
+  1. an angle that ADDS VALUE — extends the author's point with a concrete example, a missing nuance, or a "here's where this also shows up" observation;
+  2. a CONTRARIAN or EXTENDING take — a respectful counter, a caveat, a "but this breaks when…", or a sharper version of the claim;
+  3. a QUESTION that ADVANCES the discussion — a real, specific question that the author would want to answer, not a softball.
+- Each "hint" must name something concrete FROM THE POST so the operator knows exactly what to say.
+- BANNED (never produce these): "great post", "I agree", "well said", "thanks for sharing", "spot on", "love this", and any angle whose whole substance is praise or agreement.
+- bullets: 2-4 short phrases capturing what the post specifically covers. No scores, no rule names.
+- Output ONLY the JSON object.`;
+
+// When regenerating, the operator already saw (and rejected) a set of angles.
+// Tell the model to produce 3 NEW angles that don't overlap those.
+function buildAvoidBlock(avoidAngles) {
+  if (!Array.isArray(avoidAngles) || !avoidAngles.length) return "";
+  const lines = [];
+  for (const a of avoidAngles) {
+    const label = String(a?.label || "").replace(/\s+/g, " ").trim().slice(0, 80);
+    const hint = String(a?.hint || "").replace(/\s+/g, " ").trim().slice(0, 160);
+    if (!label && !hint) continue;
+    lines.push(label && hint ? `- ${label}: ${hint}` : `- ${label || hint}`);
+    if (lines.length >= 6) break;
+  }
+  if (!lines.length) return "";
+  return `ALREADY SHOWN — the operator saw these angles and wants DIFFERENT ones. Produce 3 genuinely NEW angles that take different lenses from every angle below (no rewordings):\n${lines.join("\n")}`;
+}
 
 function safeParseJson(text) {
   if (!text) return null;
@@ -99,13 +128,17 @@ export async function POST(request) {
     return Response.json({ ok: false, error: "Invalid JSON" }, { status: 400 });
   }
 
-  const { lead_name, company, lead_title, signal, url, feedback } = body || {};
+  const { lead_name, company, lead_title, signal, url, feedback, avoidAngles } = body || {};
   const postText = typeof signal === "string" ? signal.slice(0, POST_TEXT_CAP) : "";
   if (!postText && !lead_name) {
     return Response.json({ ok: false, error: "post context required" }, { status: 400 });
   }
 
   const feedbackBlock = buildFeedbackBlock(feedback);
+  const avoidBlock = buildAvoidBlock(avoidAngles);
+  // Regenerate path (operator rejected the first set): run hotter so the new
+  // angles genuinely diverge instead of paraphrasing.
+  const temperature = avoidBlock ? 1.0 : 0.7;
 
   const contextBlock = [
     lead_name ? `Author: ${lead_name}` : null,
@@ -113,8 +146,9 @@ export async function POST(request) {
     company ? `Author company: ${company}` : null,
     url ? `Post URL: ${url}` : null,
     "",
-    "Post content / context:",
+    "Full post content / context:",
     postText || "(no post text available — infer from author context only)",
+    avoidBlock ? `\n${avoidBlock}` : null,
     feedbackBlock ? `\n${feedbackBlock}` : null,
   ].filter(Boolean).join("\n");
 
@@ -127,8 +161,9 @@ export async function POST(request) {
         "anthropic-version": "2023-06-01",
       },
       body: JSON.stringify({
-        model: SUMMARY_MODEL,
-        max_tokens: 600,
+        model: COMMENT_MODEL,
+        max_tokens: 900,
+        temperature,
         system: SYSTEM_PROMPT,
         messages: [{ role: "user", content: contextBlock }],
       }),

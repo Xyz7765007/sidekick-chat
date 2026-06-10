@@ -352,7 +352,7 @@ function FeedbackCapture({ itemType, leadName, leadCompany, onSubmitted, childre
   // Where the popover anchors: at the selection rect on desktop, centered just
   // above the docked bar on mobile (so it clears the native selection toolbar).
   const popStyle = docked
-    ? { left: "50%", bottom: 64, top: "auto" }
+    ? { left: "50%", bottom: 140, top: "auto" } // above the lifted dock bar (item 13)
     : { left: pill?.x ?? 40, top: (pill?.y ?? 40) + 8 };
 
   // The floating pill / docked bar / popover are all `position:fixed` and must
@@ -586,6 +586,49 @@ function formatSignalText(raw) {
   // break "X — 📊 Y" into "X —\n📊 Y".
   out = out.replace(/[\s—–-]+\n/g, "\n");
   return out;
+}
+
+// getConnector — the card's TITLE IDENTITY (Kunal item 14): every card is
+// titled by the CONNECTOR it came from, with an icon beside it, shown
+// uniformly across every card type. Derived from task_type first (most
+// reliable), then source/task_rule hints. Returns { icon, label, tone }.
+// The lead name/company still render below as the card's subject.
+function getConnector(card) {
+  if (!card) return { icon: "•", label: "Task", tone: "default" };
+  const byType = {
+    linkedin_engagement: { icon: "🔗", label: "LinkedIn Posts", tone: "li" },
+    lead_movement:       { icon: "🔁", label: "Movement",      tone: "movement" },
+    top_x:               { icon: "⭐", label: "Top Leads",      tone: "top" },
+    engagement:          { icon: "🌐", label: "Site Visits",   tone: "ga" },
+  };
+  if (byType[card.task_type]) return byType[card.task_type];
+  // Fallback: infer from source / task_rule text for less-common connectors.
+  const hint = `${card.source || ""} ${card.task_rule || ""}`.toLowerCase();
+  if (/news/.test(hint))                       return { icon: "📰", label: "News",          tone: "default" };
+  if (/job|hiring/.test(hint))                 return { icon: "💼", label: "Job Posts",     tone: "default" };
+  if (/linkedin|post/.test(hint))              return { icon: "🔗", label: "LinkedIn Posts", tone: "li" };
+  if (/movement|hire|promot|exit/.test(hint))  return { icon: "🔁", label: "Movement",      tone: "movement" };
+  return { icon: "•", label: card.source || "Task", tone: "default" };
+}
+
+// stripInternalSignal — for the in-app "full post" view on a LinkedIn comment
+// card (Kunal item 16: don't leave the app). The raw `signal` interleaves the
+// public post text (🔗/📝/💬 markers) with INTERNAL scoring (📊 score, 📋 rule
+// names). We render the post in-app but MUST NOT surface scores/rule names, so
+// drop any line carrying an internal marker or an obvious score token. The
+// model-generated summary/bullets remain the primary view; this is the
+// "read the whole post without leaving" affordance. Run formatSignalText FIRST.
+function stripInternalSignal(formatted) {
+  if (!formatted || typeof formatted !== "string") return formatted || "";
+  const lines = formatted.split("\n").filter((ln) => {
+    const t = ln.trim();
+    if (!t) return false;
+    if (t.startsWith("📊") || t.startsWith("📋")) return false; // score / rule lines
+    if (/\b\d{1,3}\/100\b/.test(t)) return false;               // residual score token
+    if (/\bicp fit\b/i.test(t) || /\brules? matched\b/i.test(t)) return false;
+    return true;
+  });
+  return lines.join("\n").trim();
 }
 
 // ─────────────────────────────────────────────────────────────────────
@@ -1116,15 +1159,29 @@ export default function SideKick() {
   // 3 commenting angles once and cache by card.id. Mirrors the summary
   // lazy-fetch so we never spend tokens on cards the operator never sees.
   // Only the TOP card is considered (matches the single-card stack UX).
-  const fetchCommentAngles = useCallback((card) => {
+  // `opts.regenerate` (item 10): force a fresh set of angles distinct from the
+  // ones the operator already saw. We clear the cached angles BEFORE the fetch
+  // (so the stale 3 vanish immediately) and pass them as `avoidAngles` so the
+  // route instructs the model to produce 3 NEW ones at a higher temperature.
+  const fetchCommentAngles = useCallback((card, opts = {}) => {
     if (!card || card.task_type !== "linkedin_engagement") return;
-    if (commentData[card.id]) return;
     if (pendingCommentDataRef.current.has(card.id)) return;
+
+    const prev = commentData[card.id];
+    const regenerate = !!opts.regenerate;
+    // First load: skip if already cached. Regenerate: always proceed.
+    if (!regenerate && prev) return;
+
+    const avoidAngles = regenerate && prev?.angles?.length
+      ? prev.angles.map(a => ({ label: a.label, hint: a.hint }))
+      : [];
 
     // Lazy-load learned comment prefs once per session (best-effort).
     if (!commentPrefsLoadedRef.current) refreshCommentPrefs();
 
     pendingCommentDataRef.current.add(card.id);
+    // Clear the cached angles for this card so the rejected set is gone while
+    // the new ones load (item 10 — never re-show the same 3).
     setCommentData(s => ({ ...s, [card.id]: { status: "loading" } }));
 
     fetch("/api/comment-angles", {
@@ -1139,6 +1196,8 @@ export default function SideKick() {
         url: card.url || card.lead_linkedin || "",
         // learned comment prefs bias the suggested angles
         feedback: commentPrefsRef.current,
+        // on regenerate: the angles the operator already rejected
+        avoidAngles,
       }),
     })
       .then(r => r.json())
@@ -1355,6 +1414,9 @@ export default function SideKick() {
       return;
     }
     if (itemType === "comment") refreshCommentPrefs();
+    // Silent path (item 7 exemplar capture): refresh prefs but don't stack a
+    // "Feedback saved" toast on top of the operator's "Comment copied" toast.
+    if (meta?.silent) return;
     showToast("Feedback saved — future drafts will use it.");
   }
 
@@ -1752,6 +1814,7 @@ Best,
                     meta={getMeta(topCard)}
                     commentData={commentData[topCard.id]}
                     onRequestAngles={() => fetchCommentAngles(topCard)}
+                    onRegenerateAngles={() => fetchCommentAngles(topCard, { regenerate: true })}
                     onAction={handleAction}
                     onSetFocus={handleSetFocus}
                     onFeedbackSubmitted={handleFeedbackSubmitted}
@@ -2215,14 +2278,10 @@ function Card({ card, leaving, enriching, subject, meta, summary, onAction, onEn
     card.lead_name || card.lead_linkedin || card.lead_email
   );
 
-  // Type chip — small visual category indicator at the top.
-  // Replaces the old section header (since stack mode merges all sections).
-  const typeChip = ({
-    lead_movement:       { icon: "📈", label: "Movement",     tone: "movement" },
-    linkedin_engagement: { icon: "💬", label: "LinkedIn",     tone: "li" },
-    engagement:          { icon: "🌐", label: "Site visit",   tone: "ga" },
-    top_x:               { icon: "🎯", label: "Top lead",     tone: "top" },
-  })[card.task_type] || { icon: "·", label: "Task", tone: "default" };
+  // Connector chip — the card's TITLE IDENTITY (Kunal item 14): connector
+  // name + icon, derived uniformly via getConnector so every card type is
+  // titled the same way. The lead name/company render below as the subject.
+  const typeChip = getConnector(card);
 
   // Movement-specific badge (Hired/Promoted/Exited) — distinct from typeChip
   const movementBadge = card.movement_type ? ({
@@ -2501,7 +2560,7 @@ function Card({ card, leaving, enriching, subject, meta, summary, onAction, onEn
 // ═══════════════════════════════════════════════════════════════════
 function LinkedInCommentCard({
   card, leaving, subject, meta, commentData,
-  onRequestAngles, onAction, onSetFocus, onFeedbackSubmitted, commentPrefs, isFocused, onCopied,
+  onRequestAngles, onRegenerateAngles, onAction, onSetFocus, onFeedbackSubmitted, commentPrefs, isFocused, onCopied,
   onNotNeeded,
 }) {
   const isDisabled = leaving;
@@ -2510,11 +2569,17 @@ function LinkedInCommentCard({
   const [chosenAngleId, setChosenAngleId] = useState(null);
   const [comment, setComment] = useState("");
   const [commentStatus, setCommentStatus] = useState("idle"); // idle | loading | ready | error
+  // item 16: read the WHOLE post inline (no app exit). Full text is already
+  // client-side in card.signal; we sanitize out internal scoring before showing.
+  const [showFullPost, setShowFullPost] = useState(false);
+  const fullPostText = stripInternalSignal(formatSignalText(card.signal));
+  const hasFullPost = !!fullPostText;
 
   // Lazy-fetch angles when this card mounts (it only mounts when it's the
   // visible top card — the stack renders one card at a time).
   useEffect(() => {
     onRequestAngles?.();
+    setShowFullPost(false);
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [card.id]);
 
@@ -2536,6 +2601,9 @@ function LinkedInCommentCard({
         if (tag === "INPUT" || tag === "TEXTAREA" || tag === "SELECT" || el.isContentEditable) return;
       }
       if (isDisabled) return;
+      // item 7: don't let a 1/2/3 hotkey clobber an in-progress "write my own"
+      // draft when focus is outside the textarea.
+      if (chosenAngleId === "custom") return;
       if (e.key === "1" || e.key === "2" || e.key === "3") {
         const idx = Number(e.key) - 1;
         const a = angles[idx];
@@ -2545,11 +2613,11 @@ function LinkedInCommentCard({
     window.addEventListener("keydown", onKey);
     return () => window.removeEventListener("keydown", onKey);
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [angles, isDisabled]);
+  }, [angles, isDisabled, chosenAngleId]);
   const bullets = commentData?.bullets || [];
   const postSummary = commentData?.summary || "";
 
-  async function generate(angle) {
+  async function generate(angle, regenerate = false) {
     if (!angle) return;
     setCommentStatus("loading");
     try {
@@ -2565,6 +2633,8 @@ function LinkedInCommentCard({
           angle: { label: angle.label, hint: angle.hint },
           // learned comment prefs (closes the loop) — replaces persona
           feedback: commentPrefs?.current || [],
+          // higher-temperature path so the rewrite actually varies (item 10)
+          regenerate,
         }),
       });
       const d = await r.json();
@@ -2585,20 +2655,75 @@ function LinkedInCommentCard({
   }
   function regenerate() {
     const a = angles.find(x => x.id === chosenAngleId);
-    if (a) generate(a);
+    if (a) generate(a, true);
+  }
+  // item 10: ask the parent for a genuinely NEW set of 3 angles (the rejected
+  // ones are passed server-side as avoidAngles). Reset the chosen angle +
+  // any drafted comment since the angle list is about to change underneath us.
+  function regenerateAngles() {
+    setChosenAngleId(null);
+    setComment("");
+    setCommentStatus("idle");
+    onRegenerateAngles?.();
+  }
+
+  // item 7 (Kunal Jun 9): "give me a way to post a comment here itself" — the
+  // operator can ignore all 3 suggested angles and write their OWN comment.
+  // Reveal the editable comment box immediately (chosenAngleId="custom" so the
+  // li-comment-block renders; no generation call). What they write is captured
+  // as a positive exemplar on commit (see commentOnLinkedIn).
+  function writeMyOwn() {
+    setChosenAngleId("custom");
+    setComment("");
+    setCommentStatus("ready");
+  }
+
+  // item 7: the comment the operator actually POSTS is the strongest feedback —
+  // "Kunal chose to ignore the three comments, posted a fourth version… that is
+  // Kunal giving feedback… pick up the tonality from what I am posting." Capture
+  // the final committed text as a `comment` exemplar via the existing feedback
+  // loop so future angle/comment generation learns the operator's real voice.
+  // Fire-and-forget; deduped so re-clicking the same text doesn't re-post.
+  const exemplarSavedRef = useRef("");
+  function captureCommentExemplar(text) {
+    const t = String(text || "").trim();
+    if (!t || t.length < 8) return;             // ignore trivial/empty
+    if (exemplarSavedRef.current === t) return; // already captured this text
+    exemplarSavedRef.current = t;
+    fetch("/api/feedback", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({
+        item_type: "comment",
+        quoted_span: "",
+        // Short prefix + the comment; backend caps the note, voice still lands.
+        feedback_text: `Operator posted this comment himself — match this voice/approach for similar posts: "${t}"`,
+        lead_name: card.lead_name || "",
+        lead_company: card.company || "",
+      }),
+    })
+      .then(r => r.json())
+      // Refresh the in-session comment prefs (itemType "comment") but stay
+      // silent — the operator already saw "Comment copied"; no second toast.
+      .then(d => { if (d?.ok) onFeedbackSubmitted?.("comment", true, { silent: true }); })
+      .catch(() => {}); // best-effort; never block the operator's posting flow
   }
 
   function commentOnLinkedIn() {
     if (postUrl) window.open(postUrl, "_blank", "noopener,noreferrer");
     copyToClipboard(comment, () => onCopied?.("Comment copied — paste it on LinkedIn."));
+    captureCommentExemplar(comment);
   }
+
+  // Connector title identity (item 14) — same helper every other card uses.
+  const connector = getConnector(card);
 
   return (
     <div className={`card card-stack li-comment-card ${leaving ? "leaving" : "entering"}`}>
       <div className="card-header">
-        <span className="card-type card-type-li">
-          <span className="card-type-icon">💬</span>
-          LinkedIn comment
+        <span className={`card-type card-type-${connector.tone}`}>
+          <span className="card-type-icon">{connector.icon}</span>
+          {connector.label}
         </span>
         {typeof card.score === "number" && card.score > 0 && (
           <span className="card-score-chip" title={`Composite score ${card.score}`}>{card.score}</span>
@@ -2641,17 +2766,65 @@ function LinkedInCommentCard({
             </FeedbackCapture>
           </>
         )}
-        {postUrl && (
-          <a className="li-view-post" href={postUrl} target="_blank" rel="noopener noreferrer">
-            ↗ View full post
-          </a>
+        {/* item 16: read the whole post WITHOUT leaving the app. Inline toggle
+            reveals the full (internal-scrubbed) post text; a secondary link
+            still opens it on LinkedIn for those who want the live thread. */}
+        <div className="li-post-actions">
+          {hasFullPost && (
+            <button
+              className="li-fullpost-toggle"
+              onClick={(e) => { e.stopPropagation(); setShowFullPost(v => !v); }}
+              type="button"
+              aria-expanded={showFullPost}
+            >
+              {showFullPost ? "↑ Hide full post" : "↓ Read full post here"}
+            </button>
+          )}
+          {postUrl && (
+            <a className="li-view-post" href={postUrl} target="_blank" rel="noopener noreferrer">
+              ↗ Open on LinkedIn
+            </a>
+          )}
+        </div>
+        {showFullPost && hasFullPost && (
+          <FeedbackCapture
+            itemType="comment"
+            leadName={card.lead_name}
+            leadCompany={card.company}
+            onSubmitted={onFeedbackSubmitted}
+          >
+            <div className="li-fullpost">{fullPostText}</div>
+          </FeedbackCapture>
         )}
       </div>
 
       {/* Angle chips */}
       {status === "ready" && angles.length > 0 && (
         <div className="li-angles">
-          <div className="li-angles-label">Pick an angle to comment from:</div>
+          <div className="li-angles-hdr">
+            <span className="li-angles-label">Pick an angle to comment from:</span>
+            <div className="li-angles-hdr-btns">
+              <button
+                className="li-angles-regen"
+                onClick={regenerateAngles}
+                disabled={isDisabled}
+                title="None of these fit? Get 3 different angles"
+                type="button"
+              >
+                ↻ New angles
+              </button>
+              {/* item 7: ignore all 3 and write your own — captured as a voice exemplar */}
+              <button
+                className={`li-angles-own ${chosenAngleId === "custom" ? "li-angles-own-active" : ""}`}
+                onClick={writeMyOwn}
+                disabled={isDisabled}
+                title="Ignore these and write your own comment — it trains future suggestions"
+                type="button"
+              >
+                ✍ Write my own
+              </button>
+            </div>
+          </div>
           <div className="li-angles-row">
             {angles.map((a) => (
               <button
@@ -2663,6 +2836,7 @@ function LinkedInCommentCard({
                 type="button"
               >
                 {a.label}
+                {a.hint && <span className="li-angle-hint">{a.hint}</span>}
               </button>
             ))}
           </div>
@@ -2703,9 +2877,12 @@ function LinkedInCommentCard({
                 />
               </FeedbackCapture>
               <div className="li-comment-row">
-                <button className="btn" onClick={regenerate} disabled={isDisabled || commentStatus === "loading"} type="button">
-                  ↻ Regenerate
-                </button>
+                {/* No angle to regenerate from when the operator is writing their own (item 7). */}
+                {chosenAngleId !== "custom" && (
+                  <button className="btn" onClick={regenerate} disabled={isDisabled || commentStatus === "loading"} type="button">
+                    ↻ Regenerate
+                  </button>
+                )}
                 <button
                   className="btn primary"
                   onClick={commentOnLinkedIn}
@@ -2834,6 +3011,10 @@ function ManualAssistCard({ item, onRecordConnectionSent, onMarkAccepted, onReco
     if (linkedinUrl) window.open(linkedinUrl, "_blank", "noopener,noreferrer");
     copyToClipboard(text || "", () => onCopied?.(msg));
   }
+  // Standalone copy (no open) — parity with the comment flow's clean one-click copy.
+  function copyText(text, msg) {
+    copyToClipboard(text || "", () => onCopied?.(msg));
+  }
 
   const header = (
     <div className="ma-hdr">
@@ -2852,14 +3033,29 @@ function ManualAssistCard({ item, onRecordConnectionSent, onMarkAccepted, onReco
       <div className="ma-card">
         {header}
         <div className="ma-step-label">Send connection request</div>
-        {note
-          ? <div className="ma-copybox">{note}</div>
-          : <div className="ma-copybox ma-copybox-empty">No connection note — send without one.</div>}
+        {note ? (
+          <>
+            {/* Header mirrors the comment flow's copybox (label + char count). */}
+            <div className="ma-copy-hdr">
+              <span className="ma-copy-label">Connection note (copy &amp; paste)</span>
+              <span className="ma-copy-meta">{note.length} chars</span>
+            </div>
+            <div className="ma-copybox">{note}</div>
+          </>
+        ) : (
+          <div className="ma-copybox ma-copybox-empty">No connection note — send without one.</div>
+        )}
         <div className="ma-ctas">
-          <button className="btn primary" onClick={() => copyAndOpen(note, "Note copied — paste it in LinkedIn")}>
-            Copy note &amp; open LinkedIn
+          {/* Standalone copy (parity with the comment flow's clean copy). */}
+          {note && (
+            <button className="btn" onClick={() => copyText(note, "Note copied — paste it in LinkedIn")} type="button">
+              ⧉ Copy note
+            </button>
+          )}
+          <button className="btn primary" onClick={() => copyAndOpen(note, "Note copied — paste it in LinkedIn")} type="button">
+            ↗ Copy &amp; open LinkedIn
           </button>
-          <button className="btn" onClick={() => onRecordConnectionSent(item.id)}>
+          <button className="btn" onClick={() => onRecordConnectionSent(item.id)} type="button">
             Mark connection sent
           </button>
         </div>
@@ -2893,14 +3089,27 @@ function ManualAssistCard({ item, onRecordConnectionSent, onMarkAccepted, onReco
       <div className="ma-card">
         {header}
         <div className="ma-step-label">DM{step} to {lead}</div>
-        {dm
-          ? <div className="ma-copybox">{dm}</div>
-          : <div className="ma-copybox ma-copybox-empty">No DM{step} text generated.</div>}
+        {dm ? (
+          <>
+            <div className="ma-copy-hdr">
+              <span className="ma-copy-label">DM{step} (copy &amp; paste)</span>
+              <span className="ma-copy-meta">{dm.length} chars</span>
+            </div>
+            <div className="ma-copybox">{dm}</div>
+          </>
+        ) : (
+          <div className="ma-copybox ma-copybox-empty">No DM{step} text generated.</div>
+        )}
         <div className="ma-ctas">
-          <button className="btn primary" onClick={() => copyAndOpen(dm, `DM${step} copied — paste it in LinkedIn`)}>
-            Copy DM &amp; open LinkedIn
+          {dm && (
+            <button className="btn" onClick={() => copyText(dm, `DM${step} copied — paste it in LinkedIn`)} type="button">
+              ⧉ Copy DM
+            </button>
+          )}
+          <button className="btn primary" onClick={() => copyAndOpen(dm, `DM${step} copied — paste it in LinkedIn`)} type="button">
+            ↗ Copy &amp; open LinkedIn
           </button>
-          <button className="btn" onClick={() => onRecordDmSent(item.id, step)}>
+          <button className="btn" onClick={() => onRecordDmSent(item.id, step)} type="button">
             Mark DM{step} sent
           </button>
         </div>

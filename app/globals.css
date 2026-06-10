@@ -301,22 +301,34 @@ body { position: relative; }
 }
 @keyframes spin { to { transform: rotate(360deg); } }
 
-/* Toast */
+/* Toast — bottom-center, lifted CLEAR of the sticky chat input AND the
+   bottom-docked feedback bar so it never overlaps another bottom widget
+   (Kunal item 13: confusing bottom overlap). z-index 70 keeps it above the
+   chat input (5), fb-dock (62) and feedback popover (61) so a confirmation
+   is always the topmost, fully-readable element. It stays a narrow centered
+   pill (max-width) so it never spreads into the bottom-right action area. */
 .toast {
   position: fixed;
-  bottom: 90px; /* lifted above chat input */
+  bottom: calc(132px + env(safe-area-inset-bottom, 0px));
   left: 50%;
-  transform: translateX(-50%) translateY(120%);
+  max-width: min(420px, calc(100vw - 32px));
+  transform: translateX(-50%) translateY(140%);
   background: var(--t1);
   color: var(--bg);
   padding: 10px 18px;
   border-radius: 10px;
   font-size: 13px;
-  z-index: 10;
-  transition: transform 0.3s ease;
+  z-index: 70;
+  transition: transform 0.3s ease, opacity 0.3s ease;
+  opacity: 0;
+  pointer-events: none;
   box-shadow: 0 8px 24px rgba(0, 0, 0, 0.2);
 }
-.toast.show { transform: translateX(-50%) translateY(0); }
+.toast.show {
+  transform: translateX(-50%) translateY(0);
+  opacity: 1;
+  pointer-events: auto;
+}
 
 /* ─── Movement scan banner ────────────────────────────────────── */
 .scan-banner {
@@ -936,8 +948,13 @@ body { position: relative; }
   color: var(--t2);
   font-style: italic;
 }
+.li-post-actions {
+  display: flex;
+  align-items: center;
+  gap: 14px;
+  flex-wrap: wrap;
+}
 .li-view-post {
-  align-self: flex-start;
   color: var(--acc-deep);
   text-decoration: none;
   font-size: 12px;
@@ -945,40 +962,120 @@ body { position: relative; }
   opacity: 0.9;
 }
 .li-view-post:hover { opacity: 1; }
+.li-fullpost-toggle {
+  border: none;
+  background: transparent;
+  color: var(--acc-deep);
+  font-family: inherit;
+  font-size: 12px;
+  font-weight: 600;
+  cursor: pointer;
+  padding: 0;
+}
+.li-fullpost-toggle:hover { text-decoration: underline; }
+/* Inline full post — the whole LinkedIn post, scrubbed of internal scoring,
+   so the operator never leaves the app to read it (Kunal item 16). */
+.li-fullpost {
+  margin-top: 4px;
+  font-size: 12.5px;
+  color: var(--t1);
+  line-height: 1.55;
+  white-space: pre-wrap;
+  word-break: break-word;
+  max-height: 320px;
+  overflow: auto;
+  background: var(--bg-warm);
+  border: 1px solid var(--line);
+  border-radius: 10px;
+  padding: 12px 14px;
+}
 
 .li-angles { margin-top: 16px; }
+.li-angles-hdr {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+  margin-bottom: 8px;
+}
 .li-angles-label {
   font-size: 11px;
   color: var(--t2);
-  margin-bottom: 8px;
   font-weight: 500;
 }
+.li-angles-regen {
+  border: none;
+  background: transparent;
+  color: var(--t3);
+  font-family: inherit;
+  font-size: 11px;
+  font-weight: 600;
+  cursor: pointer;
+  padding: 3px 7px;
+  border-radius: 7px;
+  white-space: nowrap;
+  transition: color 0.15s ease, background 0.15s ease;
+}
+.li-angles-regen:hover { color: var(--acc-deep); background: var(--bg-warm); }
+.li-angles-regen:disabled { opacity: 0.4; cursor: not-allowed; }
+/* item 7: header holds both "New angles" and "Write my own" side by side */
+.li-angles-hdr-btns { display: flex; align-items: center; gap: 4px; flex-shrink: 0; }
+.li-angles-own {
+  border: none;
+  background: transparent;
+  color: var(--t3);
+  font-family: inherit;
+  font-size: 11px;
+  font-weight: 600;
+  cursor: pointer;
+  padding: 3px 7px;
+  border-radius: 7px;
+  white-space: nowrap;
+  transition: color 0.15s ease, background 0.15s ease;
+}
+.li-angles-own:hover { color: var(--acc-deep); background: var(--bg-warm); }
+.li-angles-own:disabled { opacity: 0.4; cursor: not-allowed; }
+.li-angles-own-active { color: var(--acc-deep); background: var(--bg-warm); }
+/* Angles stack vertically now — each chip shows its hint so the operator can
+   see WHY the angle fits without leaving the app (Kunal item 9). */
 .li-angles-row {
   display: flex;
+  flex-direction: column;
   gap: 8px;
-  flex-wrap: wrap;
 }
 .li-angle-chip {
+  display: flex;
+  flex-direction: column;
+  align-items: flex-start;
+  gap: 3px;
+  width: 100%;
+  text-align: left;
   border: 1px solid var(--line);
   background: var(--surface);
   box-shadow: var(--neu-shadow-tight);
   color: var(--t1);
-  border-radius: 9px;
-  padding: 8px 12px;
-  font-size: 12px;
-  font-weight: 500;
+  border-radius: 10px;
+  padding: 10px 13px;
+  font-size: 12.5px;
+  font-weight: 600;
   cursor: pointer;
   font-family: inherit;
   transition: all 0.15s ease;
 }
-.li-angle-chip:hover { color: var(--acc-deep); }
+.li-angle-chip:hover { color: var(--acc-deep); border-color: var(--acc); }
 .li-angle-chip:disabled { opacity: 0.4; cursor: not-allowed; }
 .li-angle-chip-active {
   border-color: var(--acc);
   color: var(--acc-deep);
   background: var(--bg-warm);
-  font-weight: 600;
 }
+.li-angle-hint {
+  font-size: 11.5px;
+  font-weight: 400;
+  color: var(--t2);
+  line-height: 1.45;
+}
+.li-angle-chip-active .li-angle-hint { color: var(--t1); }
 
 .li-comment-block {
   margin-top: 16px;
@@ -1081,17 +1178,19 @@ body { position: relative; }
   align-items: center;
   margin-bottom: 14px;
 }
+/* Connector title identity (Kunal item 14): icon + connector name, shown
+   uniformly on every card. Reads as the card's title line above the lead. */
 .card-type {
-  font-size: 11px;
-  letter-spacing: 0.05em;
+  font-size: 11.5px;
+  letter-spacing: 0.04em;
   text-transform: uppercase;
   color: var(--t2);
   display: inline-flex;
   align-items: center;
-  gap: 6px;
-  font-weight: 500;
+  gap: 7px;
+  font-weight: 600;
 }
-.card-type-icon { font-size: 13px; }
+.card-type-icon { font-size: 15px; }
 .card-type-movement { color: var(--acc-deep); }
 .card-type-li       { color: #8B6FB0; }
 .card-type-ga       { color: var(--pos); }
@@ -1548,9 +1647,8 @@ body { position: relative; }
   .card-stack { padding: 16px 16px 14px; }
   .card-name { font-size: 17px; }
 
-  /* Angle chips wrap cleanly + fill width for easy thumb tapping. */
+  /* Angle chips already stack full-width (vertical with hints) — just tighten. */
   .li-angles-row { gap: 6px; }
-  .li-angle-chip { flex: 1 1 auto; text-align: center; }
 
   /* Batch padding scales down with the card. */
   .batch-compact { padding: 12px 14px; }
@@ -1638,7 +1736,9 @@ body { position: relative; }
   position: fixed;
   left: 0;
   right: 0;
-  bottom: calc(12px + env(safe-area-inset-bottom, 0px));
+  /* Lifted above the sticky chat input so the feedback bar never overlaps the
+     bottom action area (Kunal item 13). */
+  bottom: calc(84px + env(safe-area-inset-bottom, 0px));
   z-index: 62;
   display: flex;
   justify-content: center;
@@ -1842,6 +1942,22 @@ body { position: relative; }
   white-space: pre-wrap; word-wrap: break-word;
   margin-bottom: 12px;
 }
+/* Copybox header — mirrors the comment flow's .li-comment-hdr (item 8 parity). */
+.ma-copy-hdr {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  margin-bottom: 6px;
+}
+.ma-copy-label {
+  font-size: 10.5px;
+  font-weight: 600;
+  color: var(--t1);
+  text-transform: uppercase;
+  letter-spacing: 0.06em;
+  font-family: 'JetBrains Mono', ui-monospace, monospace;
+}
+.ma-copy-meta { font-size: 10.5px; color: var(--t3); }
 .ma-copybox-empty { color: var(--t3); font-style: italic; }
 .ma-ctas { display: flex; gap: 10px; flex-wrap: wrap; }
 .ma-ctas .btn { font-size: 12.5px; padding: 7px 13px; text-decoration: none; }

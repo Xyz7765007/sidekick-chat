@@ -118,6 +118,7 @@ Two Anthropic models, both configurable via env:
 
 - **`CLAUDE_MODEL`** — Chat orchestrator. Default `claude-sonnet-4-6`. (NOTE: header comment in `chat/route.js` line 14 says "haiku-4-5 (fast + cheap, plenty smart for intent + chat)" — comment is **stale**. Actual default is `claude-sonnet-4-6` per line 27. Either the comment is wrong or the override is set in env. Verify Vercel env vars before assuming.)
 - **`SUMMARY_MODEL`** — Lead summary. Default `claude-haiku-4-5-20251001`.
+- **`COMMENT_MODEL`** — Comment-angles + generate-comment. Default `claude-sonnet-4-6`. Haiku produced generic, indistinct angles (Kunal Jun9 #9); Sonnet grounds them in the post's substance. summarize stays on Haiku.
 
 The chatbot does NOT use OpenAI directly. All OpenAI work (auto-batch message generation, scoring, etc.) happens on SignalScope's side and reaches the chatbot via the proxy routes.
 
@@ -128,6 +129,7 @@ ANTHROPIC_API_KEY              # Required — both chat orchestrator + summarize
 BRIEFING_CRON_SECRET           # Auth for the GH Actions daily Slack briefing cron
 CHATBOT_URL                    # Public URL of this chatbot (used in Slack reminder's CTA button)
 CLAUDE_MODEL                   # Optional, default claude-sonnet-4-6 (per code; comment says haiku)
+COMMENT_MODEL                  # Optional, default claude-sonnet-4-6 — comment-angles + generate-comment (reasoning quality; Haiku gave generic angles)
 SIDEKICK_API_KEY               # Bearer token sent to SignalScope — MUST match SignalScope's env var
 SIGNALSCOPE_API_URL            # Base URL for SignalScope (e.g. https://news-material-two.vercel.app)
 SLACK_BRIEFING_WEBHOOK_URL     # Slack incoming webhook for #veloka-daily-test
