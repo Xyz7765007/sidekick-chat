@@ -2,6 +2,23 @@
 
 This file is read by Claude Code when working in this repo. It is authoritative — if anything here contradicts the actual code, the code is right and this file is stale (fix this file).
 
+## 0. Design principle: LESS IS MORE (Samarth, 2026-06-12)
+
+The standing rule for ALL UX/UI work in this app. One thing in focus, clear
+direction, no competing surfaces (the Biscuit-style one-at-a-time queue is
+the embodiment — see `.learnings/2026-06-11-biscuit-redesign.md`).
+
+In practice, before adding ANY new UI element ask:
+- Can an existing affordance carry this instead of a new button/section?
+- Can it live behind an existing surface (chat panel, Handled panel, queue
+  step) instead of adding a parallel one to the main column?
+- Does it compete with the focused card for attention? If yes, it's wrong.
+- Default to removing/hiding over adding. Quiet > loud, fewer > more.
+
+When Samarth asks for a feature, the first design pass should be the
+SMALLEST visible footprint that does the job — then offer the richer
+version only if the minimal one falls short.
+
 ---
 
 ## 1. What this is
