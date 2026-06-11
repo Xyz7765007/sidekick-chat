@@ -1593,6 +1593,119 @@ body { position: relative; }
 .chat-send .spinner-sm { border-color: rgba(255,255,255,0.35); border-top-color: #fff; }
 
 /* ═══════════════════════════════════════════════════════════════
+   HANDLED HISTORY — reopen actioned tasks
+   ═══════════════════════════════════════════════════════════════ */
+.hist-overlay {
+  position: fixed;
+  inset: 0;
+  background: rgba(26, 24, 20, 0.4);
+  backdrop-filter: blur(3px);
+  -webkit-backdrop-filter: blur(3px);
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  z-index: 50;
+  padding: 16px;
+}
+.hist-panel {
+  background: var(--card);
+  border: 1px solid var(--border);
+  border-radius: var(--r);
+  box-shadow: var(--shadow-lg);
+  width: 100%;
+  max-width: 480px;
+  max-height: 80dvh;
+  display: flex;
+  flex-direction: column;
+  padding: 20px 22px;
+  animation: panelIn 0.3s var(--ease-out) forwards;
+}
+.hist-hdr {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  margin-bottom: 4px;
+}
+.hist-title {
+  font-family: 'DM Serif Display', serif;
+  font-size: 19px;
+  color: var(--text);
+  letter-spacing: -0.3px;
+}
+.hist-sub {
+  font-size: 12.5px;
+  color: var(--text-3);
+  margin-bottom: 14px;
+  line-height: 1.5;
+}
+.hist-list {
+  flex: 1;
+  min-height: 0;
+  overflow-y: auto;
+  border: 1px solid var(--border);
+  border-radius: var(--r-sm);
+}
+.hist-list::-webkit-scrollbar { width: 3px; }
+.hist-list::-webkit-scrollbar-thumb { background: var(--border-2); border-radius: 2px; }
+.hist-row {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  padding: 11px 14px;
+  border-bottom: 1px solid var(--border);
+}
+.hist-row:last-child { border-bottom: none; }
+.hist-row:hover { background: var(--bg); }
+.hist-info { flex: 1; min-width: 0; }
+.hist-name {
+  font-size: 13.5px;
+  font-weight: 600;
+  color: var(--text);
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+.hist-co { font-weight: 400; color: var(--text-2); }
+.hist-meta {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  font-size: 11.5px;
+  color: var(--text-3);
+  margin-top: 3px;
+  flex-wrap: wrap;
+}
+.hist-badge {
+  font-size: 10px;
+  font-weight: 700;
+  text-transform: uppercase;
+  letter-spacing: 0.4px;
+  padding: 1px 8px;
+  border-radius: 20px;
+}
+.hist-badge-done {
+  background: var(--success-bg);
+  color: var(--success);
+  border: 1px solid rgba(42, 157, 92, 0.3);
+}
+.hist-badge-skip {
+  background: var(--bg);
+  color: var(--text-3);
+  border: 1px solid var(--border);
+}
+.hist-reopen { flex-shrink: 0; font-size: 12px; padding: 7px 12px; }
+.hist-empty {
+  padding: 28px 16px;
+  text-align: center;
+  font-size: 13px;
+  color: var(--text-3);
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  gap: 8px;
+}
+
+/* ═══════════════════════════════════════════════════════════════
    EMAIL DRAFT MODAL
    ═══════════════════════════════════════════════════════════════ */
 .email-modal-overlay {
@@ -2036,7 +2149,8 @@ body { position: relative; }
   .card-stack { padding: 18px 18px 16px; }
   .card-name { font-size: 17px; }
   .spotlight { display: none; }
-  .hdr-action { font-size: 11px; padding: 7px 10px; }
+  .hdr-action { font-size: 12px; padding: 7px 10px; }
+  .hdr-action-label { display: none; } /* icon-only buttons on phones */
   .hdr-r { gap: 8px; }
   .batch-card { padding: 16px; }
   .batch-lead { padding: 12px; }

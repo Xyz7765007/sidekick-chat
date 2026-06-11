@@ -588,6 +588,18 @@ function formatSignalText(raw) {
   return out;
 }
 
+// handledAgo — compact relative time for the Handled panel rows.
+function handledAgo(iso) {
+  if (!iso) return "";
+  const s = Math.max(0, Math.round((Date.now() - new Date(iso).getTime()) / 1000));
+  if (s < 60) return "just now";
+  const m = Math.round(s / 60);
+  if (m < 60) return `${m}m ago`;
+  const h = Math.round(m / 60);
+  if (h < 24) return `${h}h ago`;
+  return `${Math.round(h / 24)}d ago`;
+}
+
 // getConnector — the card's TITLE IDENTITY (Kunal item 14): every card is
 // titled by the CONNECTOR it came from, with an icon beside it, shown
 // uniformly across every card type. Derived from task_type first (most
@@ -797,6 +809,15 @@ export default function SideKick() {
   // thing is ever in focus. "Later" defers a step to the back of the queue
   // for this session. Step keys: "batch" | card.id.
   const [deferred, setDeferred] = useState([]);
+
+  // ─── Handled history (revisit actioned tasks — 2026-06-11) ─────
+  // Done/Skip stamps Handled At server-side; "reopen" clears it so the
+  // task returns to the feed. Three ways back: the Undo button on the
+  // action toast, the U hotkey (last action this session), and the
+  // Handled panel (any recently handled task, survives reloads).
+  const [handledOpen, setHandledOpen] = useState(false);
+  const [handledList, setHandledList] = useState({ status: "idle", items: [] });
+  const lastHandledRef = useRef(null); // last task id actioned this session
   const [editingDraft, setEditingDraft] = useState(null); // { recordId, field, text }
   const [batchGenerating, setBatchGenerating] = useState(false);
 
@@ -1065,6 +1086,15 @@ export default function SideKick() {
         if (tag === "INPUT" || tag === "TEXTAREA" || tag === "SELECT" || el.isContentEditable) return;
       }
       if (chatBusy || emailDraft || chatOpenRef.current) return;
+      // U = undo the last done/skip of this session — works even when the
+      // feed is empty (e.g. the operator just actioned the final card).
+      if (e.key === "u" || e.key === "U") {
+        if (lastHandledRef.current) {
+          e.preventDefault();
+          reopenTask(lastHandledRef.current);
+        }
+        return;
+      }
       const top = topCardRef.current;
       if (!top) return;
       // Re-entry guard: ignore if the top card is already animating out
@@ -1269,7 +1299,12 @@ export default function SideKick() {
           }
         }, 300);
         setSessionDone((n) => n + 1);
-        showToast(action === "done" ? "Marked done ✓" : "Skipped");
+        lastHandledRef.current = taskId;
+        showToast(
+          action === "done" ? "Marked done ✓" : "Skipped",
+          6000,
+          { label: "Undo", onUndo: () => reopenTask(taskId) }
+        );
       } else {
         setLeaving((s) => { const ns = new Set(s); ns.delete(taskId); return ns; });
         // Setup-fix case: surface the curl command so operator can act
@@ -1533,6 +1568,50 @@ export default function SideKick() {
     if (stickyTopIdRef.current === key) stickyTopIdRef.current = null;
   }
 
+  // ─── Reopen a handled task (Undo / U / Handled panel) ───────────
+  // Clears Handled At server-side, then pins the task as the focused
+  // step so it's immediately back on screen.
+  const fetchHandled = useCallback(async () => {
+    setHandledList((s) => ({ ...s, status: "loading" }));
+    try {
+      const r = await fetch("/api/handled?limit=20", { cache: "no-store" });
+      const d = await r.json();
+      if (d.ok) setHandledList({ status: "ready", items: d.items || [] });
+      else setHandledList({ status: "error", items: [] });
+    } catch {
+      setHandledList({ status: "error", items: [] });
+    }
+  }, []);
+
+  async function reopenTask(taskId) {
+    try {
+      const r = await fetch("/api/action", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ taskId, action: "reopen" }),
+      });
+      const data = await r.json();
+      if (data.ok) {
+        setDeferred((d) => d.filter((k) => k !== taskId));
+        setSessionDone((n) => Math.max(0, n - 1));
+        if (lastHandledRef.current === taskId) lastHandledRef.current = null;
+        stickyTopIdRef.current = taskId; // straight back into focus
+        await fetchFeed();
+        setHandledOpen(false);
+        showToast("Reopened — back in focus");
+      } else {
+        showToast(`Error: ${data.error || "Couldn't reopen"}`, 4000);
+      }
+    } catch (e) {
+      showToast(`Network error: ${e.message}`, 4000);
+    }
+  }
+
+  function openHandled() {
+    setHandledOpen(true);
+    fetchHandled();
+  }
+
   // Universal "Not needed" — NOT a rule. A per-task skip (advances the stack)
   // with a note so the backend can distinguish it from a plain skip.
   async function markNotNeeded(card) {
@@ -1553,7 +1632,8 @@ export default function SideKick() {
           if (stickyTopIdRef.current === taskId) stickyTopIdRef.current = null;
         }, 300);
         setSessionDone((n) => n + 1);
-        showToast("Marked not needed");
+        lastHandledRef.current = taskId;
+        showToast("Marked not needed", 6000, { label: "Undo", onUndo: () => reopenTask(taskId) });
       } else {
         setLeaving((s) => { const ns = new Set(s); ns.delete(taskId); return ns; });
         showToast(`Error: ${data.error || "Action failed"}`, 4000);
@@ -1642,11 +1722,20 @@ Best,
           <div className="hdr-r">
             <button
               className="hdr-action"
+              onClick={openHandled}
+              title="Recently handled — reopen a task you marked done or skipped"
+            >
+              ↩<span className="hdr-action-label"> Handled</span>
+            </button>
+            <button
+              className="hdr-action"
               onClick={() => handleGenerateBatch(true)}
               disabled={batchGenerating}
               title="Regenerate today's LinkedIn batch (replaces existing)"
             >
-              {batchGenerating ? <><span className="spinner spinner-sm" /> Generating…</> : "↻ Batch"}
+              {batchGenerating
+                ? <><span className="spinner spinner-sm" /><span className="hdr-action-label"> Generating…</span></>
+                : <>↻<span className="hdr-action-label"> Batch</span></>}
             </button>
             <HeaderQueue
               pending={count + (autoBatches.some(b => (b.leads || []).length > 0) ? 1 : 0)}
@@ -1930,6 +2019,57 @@ Best,
               >
                 {chatBusy ? <span className="spinner spinner-sm" /> : "→"}
               </button>
+            </div>
+          </div>
+        </div>
+      )}
+
+      {/* Handled history — reopen tasks already marked done/skip */}
+      {handledOpen && (
+        <div className="hist-overlay" onClick={() => setHandledOpen(false)}>
+          <div className="hist-panel" onClick={(e) => e.stopPropagation()}>
+            <div className="hist-hdr">
+              <span className="hist-title">Recently handled</span>
+              <button
+                className="chat-panel-close"
+                onClick={() => setHandledOpen(false)}
+                type="button"
+                aria-label="Close"
+              >✕</button>
+            </div>
+            <div className="hist-sub">Changed your mind? Reopen a task and it comes straight back into focus.</div>
+            <div className="hist-list">
+              {handledList.status === "loading" && (
+                <div className="hist-empty"><span className="spinner spinner-sm" /> Loading…</div>
+              )}
+              {handledList.status === "error" && (
+                <div className="hist-empty">Couldn't load history — close and try again.</div>
+              )}
+              {handledList.status === "ready" && handledList.items.length === 0 && (
+                <div className="hist-empty">Nothing handled recently.</div>
+              )}
+              {handledList.status === "ready" && handledList.items.map((it) => (
+                <div key={it.id} className="hist-row">
+                  <div className="hist-info">
+                    <div className="hist-name">
+                      {it.lead_name || it.company || "Untitled"}
+                      {it.company && it.lead_name !== it.company ? (
+                        <span className="hist-co"> · {it.movement_type === "Exited" ? `Ex-${it.company}` : it.company}</span>
+                      ) : null}
+                    </div>
+                    <div className="hist-meta">
+                      <span className={`hist-badge ${it.handled_as === "done" ? "hist-badge-done" : "hist-badge-skip"}`}>
+                        {it.handled_as === "done" ? "✓ done" : "skipped"}
+                      </span>
+                      <span>{getConnector(it).label}</span>
+                      <span>{handledAgo(it.handled_at)}</span>
+                    </div>
+                  </div>
+                  <button className="btn hist-reopen" onClick={() => reopenTask(it.id)} type="button">
+                    ↩ Reopen
+                  </button>
+                </div>
+              ))}
             </div>
           </div>
         </div>
@@ -2595,7 +2735,7 @@ function Card({ card, leaving, enriching, subject, meta, summary, onAction, onEn
 
       {/* Keyboard hint — desktop only (hidden on touch via CSS) */}
       <div className="card-kbd-hint" aria-hidden="true">
-        <span className="kb-key">↵</span> done · <span className="kb-key">S</span> skip
+        <span className="kb-key">↵</span> done · <span className="kb-key">S</span> skip · <span className="kb-key">U</span> undo
       </div>
     </div>
   );
@@ -2998,7 +3138,7 @@ function LinkedInCommentCard({
 
       {/* Keyboard hint — desktop only (hidden on touch via CSS) */}
       <div className="card-kbd-hint" aria-hidden="true">
-        <span className="kb-key">↵</span> done · <span className="kb-key">S</span> skip
+        <span className="kb-key">↵</span> done · <span className="kb-key">S</span> skip · <span className="kb-key">U</span> undo
         {status === "ready" && angles.length > 0 && (
           <> · <span className="kb-key">1</span><span className="kb-key">2</span><span className="kb-key">3</span> angle</>
         )}

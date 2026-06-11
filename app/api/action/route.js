@@ -17,8 +17,8 @@ export async function POST(request) {
   }
   const { taskId, action, notes } = body || {};
   if (!taskId) return Response.json({ ok: false, error: "taskId required" }, { status: 400 });
-  if (!action || !["done", "skip"].includes(action)) {
-    return Response.json({ ok: false, error: "action must be 'done' or 'skip'" }, { status: 400 });
+  if (!action || !["done", "skip", "reopen"].includes(action)) {
+    return Response.json({ ok: false, error: "action must be 'done', 'skip' or 'reopen'" }, { status: 400 });
   }
 
   try {
