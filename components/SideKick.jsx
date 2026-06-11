@@ -792,10 +792,11 @@ export default function SideKick() {
   const [outreachQueue, setOutreachQueue] = useState([]);
   const [batchLeaving, setBatchLeaving] = useState(new Set());
   const [batchExpanded, setBatchExpanded] = useState(new Set()); // batch IDs currently "Review one-by-one"
-  // item 5: the daily batch card is collapsed to a compact single-line
-  // entry by default so it doesn't compete with the unified task stack.
-  // Click the compact row to open it. Resets on reload (session-only).
-  const [batchCollapsed, setBatchCollapsed] = useState(true);
+  // One-at-a-time queue (2026-06-11): every surface is a STEP in a single
+  // queue — the daily batch is a step like any task card, so exactly one
+  // thing is ever in focus. "Later" defers a step to the back of the queue
+  // for this session. Step keys: "batch" | card.id.
+  const [deferred, setDeferred] = useState([]);
   const [editingDraft, setEditingDraft] = useState(null); // { recordId, field, text }
   const [batchGenerating, setBatchGenerating] = useState(false);
 
@@ -1525,6 +1526,13 @@ export default function SideKick() {
     );
   }
 
+  // Defer a queue step ("Later") — moves it to the back of the session
+  // queue and releases the sticky focus so the next step renders.
+  function deferStep(key) {
+    setDeferred((d) => [...d.filter((k) => k !== key), key]);
+    if (stickyTopIdRef.current === key) stickyTopIdRef.current = null;
+  }
+
   // Universal "Not needed" — NOT a rule. A per-task skip (advances the stack)
   // with a note so the backend can distinguish it from a plain skip.
   async function markNotNeeded(card) {
@@ -1640,7 +1648,11 @@ Best,
             >
               {batchGenerating ? <><span className="spinner spinner-sm" /> Generating…</> : "↻ Batch"}
             </button>
-            <HeaderQueue pending={count} done={sessionDone} loading={loading || !!fetchError} />
+            <HeaderQueue
+              pending={count + (autoBatches.some(b => (b.leads || []).length > 0) ? 1 : 0)}
+              done={sessionDone}
+              loading={loading || !!fetchError}
+            />
           </div>
         </header>
 
@@ -1657,121 +1669,15 @@ Best,
           <div className="error">Feed error: {fetchError}</div>
         )}
 
-        {!loading && !fetchError && cards.length === 0 && (
-          <div className="empty">
-            <div className="empty-check">✓</div>
-            <div className="empty-title">All clear</div>
-            <div>No tasks need your attention right now.</div>
-          </div>
-        )}
-
-        {/* ─── DAILY LINKEDIN BATCH ─────────────────────────────
-            Merges all pending_approval records into ONE batch card
-            regardless of Batch ID. Reasoning: Batch ID is internal
-            accounting (today's vs yesterday's, etc.) — the operator just
-            wants to see "here's everything pending approval, act on it."
-            If cleanup ever partially fails server-side (Airtable rate
-            limit, etc.) we still render one unified card instead of
-            confusing the user with two cards for the same daily batch.
-
-            Dedup also runs here: same lead_name + company → render once.
-            Server-side dedup catches most cases; this is defense-in-depth.
-        */}
-        {(() => {
-          if (!autoBatches.length) return null;
-          // Collect all leads across all batch groups
-          const allLeads = autoBatches.flatMap(b => b.leads || []);
-          // Dedup by record id first (just in case), then by name+company
-          const seenIds = new Set();
-          const seenNameCo = new Set();
-          const dedupedLeads = [];
-          for (const lead of allLeads) {
-            if (seenIds.has(lead.id)) continue;
-            const key = `${(lead.lead_name || "").toLowerCase().trim()}|${(lead.company || "").toLowerCase().trim()}`;
-            if (key !== "|" && seenNameCo.has(key)) continue;
-            seenIds.add(lead.id);
-            if (key !== "|") seenNameCo.add(key);
-            dedupedLeads.push(lead);
-          }
-          // Sort by composite score desc so highest priority leads surface first
-          dedupedLeads.sort((a, b) => (b.composite_score || 0) - (a.composite_score || 0));
-          // Build a single virtual batch with batch_id="all" — server interprets
-          // "all" as a Status-only filter on send_all/skip_all
-          const mergedBatch = {
-            batch_id: "all",
-            leads: dedupedLeads,
-            count: dedupedLeads.length,
-          };
-          return (
-            <DailyBatchCard
-              key="merged-pending-batch"
-              batch={mergedBatch}
-              collapsed={batchCollapsed}
-              onToggleCollapsed={() => setBatchCollapsed(v => !v)}
-              expanded={batchExpanded.has("all")}
-              onToggleExpand={() => {
-                setBatchExpanded(prev => {
-                  const next = new Set(prev);
-                  if (next.has("all")) next.delete("all");
-                  else next.add("all");
-                  return next;
-                });
-              }}
-              onSendAll={(sendMode) => handleBatchAction("send_all", { batchId: "all", sendMode })}
-              onSkipAll={() => handleBatchAction("skip_all", { batchId: "all" })}
-              onSendOne={(recordId, sendMode) => handleBatchAction("send_one", { recordId, sendMode })}
-              onSkipOne={(recordId) => handleBatchAction("skip_one", { recordId })}
-              onEditField={(recordId, field, newText) => handleBatchAction("edit", { recordId, field, newText })}
-              editingDraft={editingDraft}
-              setEditingDraft={setEditingDraft}
-              onFeedbackSubmitted={handleFeedbackSubmitted}
-            />
-          );
-        })()}
-
-        {/* ─── MANUAL-WITH-ASSIST OUTREACH QUEUE (Kunal Batch-2 #18/#19) ──
-            In-flight leads that need a manual LinkedIn move by the exec
-            (send connection / mark accepted / send DM N), plus muted
-            "waiting" entries. The exec sends by hand; we hand them the copy
-            and record the state. Sits alongside today's batch, above the
-            unified task stack. NO automation. */}
-        {(() => {
-          // "Accepted on LinkedIn?" confirmation boxes are hidden — Unipile
-          // flags acceptance automatically, so the operator never needs to
-          // record it by hand. Waiting entries stay (muted) for visibility.
-          const visibleQueue = outreachQueue.filter(i => i.nextAction?.type !== "accept");
-          if (visibleQueue.length === 0) return null;
-          return (
-            <div className="ma-queue">
-              <div className="ma-queue-hdr">
-                <span className="ma-queue-icon">🤝</span>
-                <span className="ma-queue-title">LinkedIn follow-ups · {visibleQueue.filter(i => i.nextAction?.type !== "waiting").length} to action</span>
-              </div>
-              {visibleQueue.map(item => (
-                <ManualAssistCard
-                  key={item.id}
-                  item={item}
-                  onRecordConnectionSent={recordConnectionSent}
-                  onMarkAccepted={markConnectionAccepted}
-                  onRecordDmSent={recordDmSent}
-                  onCopied={(msg) => showToast(msg, 2600)}
-                />
-              ))}
-            </div>
-          );
-        })()}
-
-        {/* ─── UNIFIED TASK STACK (Biscuit-style one-at-a-time) ─────
-            Per May 20 client feedback ("check how it was for truffle"
-            = the Biscuit prototype from the May 7 chat): one task in
-            focus, action taken → next loads. No parallel sections
-            cluttering the view. */}
-        {!loading && !fetchError && cards.length > 0 && (() => {
+        {/* ─── UNIFIED QUEUE (Biscuit one-at-a-time, 2026-06-11) ─────
+            Exactly ONE step is ever in focus. The daily LinkedIn batch is
+            a queue step like any task card — nothing competes with the
+            focused card. "Later" defers a step to the back of the queue.
+            LinkedIn follow-ups are hidden for now (Unipile drives that
+            state automatically); the outreach handlers stay wired. */}
+        {!loading && !fetchError && (() => {
+          // 1. Task cards, priority-sorted (movements → top → comments → ga → other)
           const allCards = [...cards];
-
-          if (allCards.length === 0) { topCardRef.current = null; return null; }
-
-          // Priority groups.
           const movements   = allCards.filter(c => c.task_type === "lead_movement");
           const topLeads    = allCards.filter(c => c.task_type === "top_x");
           const liComments  = allCards.filter(c => c.task_type === "linkedin_engagement");
@@ -1783,7 +1689,6 @@ Best,
             ...gaVisitors.map(c => c.id),
           ]);
           const other = allCards.filter(c => !accountedFor.has(c.id));
-
           const byScore = (a, b) => (b.score || 0) - (a.score || 0);
           const sortedStack = [
             ...movements.sort(byScore),
@@ -1793,79 +1698,152 @@ Best,
             ...other.sort(byScore),
           ];
 
-          if (sortedStack.length === 0) { topCardRef.current = null; return null; }
-
-          // Sticky top — keep the same card visible until it's gone
-          // from the feed (user actioned it OR server removed it).
-          // Stored in a ref so polling doesn't swap the card mid-scroll.
-          let topCard;
-          const stickyStillValid = stickyTopIdRef.current && sortedStack.find(c => c.id === stickyTopIdRef.current);
-          if (stickyStillValid) {
-            topCard = sortedStack.find(c => c.id === stickyTopIdRef.current);
-          } else {
-            topCard = sortedStack[0];
-            stickyTopIdRef.current = topCard.id;
+          // 2. Daily batch step — merge all pending_approval records into ONE
+          //    virtual batch (batch_id "all"; server treats it as a Status-only
+          //    filter). Dedup by record id, then by name+company.
+          let mergedBatch = null;
+          if (autoBatches.length) {
+            const allLeads = autoBatches.flatMap(b => b.leads || []);
+            const seenIds = new Set();
+            const seenNameCo = new Set();
+            const dedupedLeads = [];
+            for (const lead of allLeads) {
+              if (seenIds.has(lead.id)) continue;
+              const key = `${(lead.lead_name || "").toLowerCase().trim()}|${(lead.company || "").toLowerCase().trim()}`;
+              if (key !== "|" && seenNameCo.has(key)) continue;
+              seenIds.add(lead.id);
+              if (key !== "|") seenNameCo.add(key);
+              dedupedLeads.push(lead);
+            }
+            dedupedLeads.sort((a, b) => (b.composite_score || 0) - (a.composite_score || 0));
+            if (dedupedLeads.length > 0) {
+              mergedBatch = { batch_id: "all", leads: dedupedLeads, count: dedupedLeads.length };
+            }
           }
-          const remaining = sortedStack.filter(c => c.id !== topCard.id);
 
-          // Keep the focused-card ref fresh so the window-level keydown +
-          // swipe handlers always act on the card actually on screen.
-          topCardRef.current = { id: topCard.id, task_type: topCard.task_type };
+          // 3. The queue: batch first (the daily ritual), then tasks.
+          const steps = [];
+          if (mergedBatch) steps.push({ key: "batch", batch: mergedBatch });
+          for (const c of sortedStack) steps.push({ key: c.id, card: c });
 
+          if (steps.length === 0) {
+            topCardRef.current = null;
+            return (
+              <div className="task-stack">
+                <div className="empty">
+                  <div className="empty-check">✓</div>
+                  <div className="empty-title">All clear</div>
+                  <div>No tasks need your attention right now.</div>
+                </div>
+              </div>
+            );
+          }
+
+          // 4. Deferred steps sink to the back, in the order they were deferred.
+          const deferredSet = new Set(deferred);
+          const ordered = [
+            ...steps.filter(s => !deferredSet.has(s.key)),
+            ...deferred.map(k => steps.find(s => s.key === k)).filter(Boolean),
+          ];
+
+          // 5. Sticky focus — the same step stays visible until it's gone
+          //    (actioned, deferred, or removed server-side).
+          let topStep = stickyTopIdRef.current
+            ? ordered.find(s => s.key === stickyTopIdRef.current)
+            : null;
+          if (!topStep) {
+            topStep = ordered[0];
+            stickyTopIdRef.current = topStep.key;
+          }
+          const remaining = ordered.filter(s => s.key !== topStep.key);
+
+          // Keyboard + swipe act only on a TASK focus — never the batch step.
+          topCardRef.current = topStep.card
+            ? { id: topStep.card.id, task_type: topStep.card.task_type }
+            : null;
+
+          const remainingCards = remaining.filter(s => s.card).map(s => s.card);
           const breakdown = {
-            movements: remaining.filter(c => c.task_type === "lead_movement").length,
-            top:       remaining.filter(c => c.task_type === "top_x").length,
-            comments:  remaining.filter(c => c.task_type === "linkedin_engagement").length,
-            ga:        remaining.filter(c => c.task_type === "engagement").length,
-            other:     remaining.filter(c => !["lead_movement", "top_x", "linkedin_engagement", "engagement"].includes(c.task_type)).length,
+            batch:     remaining.some(s => s.key === "batch") ? 1 : 0,
+            movements: remainingCards.filter(c => c.task_type === "lead_movement").length,
+            top:       remainingCards.filter(c => c.task_type === "top_x").length,
+            comments:  remainingCards.filter(c => c.task_type === "linkedin_engagement").length,
+            ga:        remainingCards.filter(c => c.task_type === "engagement").length,
+            other:     remainingCards.filter(c => !["lead_movement", "top_x", "linkedin_engagement", "engagement"].includes(c.task_type)).length,
           };
 
-          const topIsFocused = focusLead && focusLead.lead_name === topCard.lead_name && focusLead.company === topCard.company;
+          const topCard = topStep.card;
+          const topIsFocused = topCard && focusLead && focusLead.lead_name === topCard.lead_name && focusLead.company === topCard.company;
 
           return (
             <div className="task-stack">
-              <SwipeCard key={`swipe-${topCard.id}`} cardId={topCard.id} onAction={handleAction}>
-                {topCard.task_type === "linkedin_engagement" ? (
-                  <LinkedInCommentCard
-                    key={topCard.id}
-                    card={topCard}
-                    leaving={leaving.has(topCard.id)}
-                    subject={getSubject(topCard)}
-                    meta={getMeta(topCard)}
-                    commentData={commentData[topCard.id]}
-                    onRequestAngles={() => fetchCommentAngles(topCard)}
-                    onRegenerateAngles={() => fetchCommentAngles(topCard, { regenerate: true })}
-                    onAction={handleAction}
-                    onSetFocus={handleSetFocus}
-                    onFeedbackSubmitted={handleFeedbackSubmitted}
-                    commentPrefs={commentPrefsRef}
-                    isFocused={topIsFocused}
-                    onCopied={(msg) => showToast(msg, 2600)}
-                    onNotNeeded={markNotNeeded}
-                  />
-                ) : (
-                  <Card
-                    key={topCard.id}
-                    card={topCard}
-                    leaving={leaving.has(topCard.id)}
-                    enriching={enriching.has(topCard.id)}
-                    subject={getSubject(topCard)}
-                    meta={getMeta(topCard)}
-                    summary={summaries[topCard.id]}
-                    onAction={handleAction}
-                    onEnrichPhone={handleEnrichPhone}
-                    onSetFocus={handleSetFocus}
-                    onDraftEmail={handleDraftEmail}
-                    isFocused={topIsFocused}
-                    onSuppressTitle={suppressTitle}
-                    onSuppressCompany={suppressCompany}
-                    onSuppressSignal={suppressSignal}
-                    onAdjustScore={adjustScore}
-                    onNotNeeded={markNotNeeded}
-                    onFeedbackSubmitted={handleFeedbackSubmitted}
-                  />
-                )}
-              </SwipeCard>
+              {topStep.key === "batch" ? (
+                <DailyBatchCard
+                  key="merged-pending-batch"
+                  batch={topStep.batch}
+                  expanded={batchExpanded.has("all")}
+                  onToggleExpand={() => {
+                    setBatchExpanded(prev => {
+                      const next = new Set(prev);
+                      if (next.has("all")) next.delete("all");
+                      else next.add("all");
+                      return next;
+                    });
+                  }}
+                  onDefer={remaining.length > 0 ? () => deferStep("batch") : null}
+                  onSendAll={(sendMode) => handleBatchAction("send_all", { batchId: "all", sendMode })}
+                  onSkipAll={() => handleBatchAction("skip_all", { batchId: "all" })}
+                  onSendOne={(recordId, sendMode) => handleBatchAction("send_one", { recordId, sendMode })}
+                  onSkipOne={(recordId) => handleBatchAction("skip_one", { recordId })}
+                  onEditField={(recordId, field, newText) => handleBatchAction("edit", { recordId, field, newText })}
+                  editingDraft={editingDraft}
+                  setEditingDraft={setEditingDraft}
+                  onFeedbackSubmitted={handleFeedbackSubmitted}
+                />
+              ) : (
+                <SwipeCard key={`swipe-${topCard.id}`} cardId={topCard.id} onAction={handleAction}>
+                  {topCard.task_type === "linkedin_engagement" ? (
+                    <LinkedInCommentCard
+                      key={topCard.id}
+                      card={topCard}
+                      leaving={leaving.has(topCard.id)}
+                      subject={getSubject(topCard)}
+                      meta={getMeta(topCard)}
+                      commentData={commentData[topCard.id]}
+                      onRequestAngles={() => fetchCommentAngles(topCard)}
+                      onRegenerateAngles={() => fetchCommentAngles(topCard, { regenerate: true })}
+                      onAction={handleAction}
+                      onSetFocus={handleSetFocus}
+                      onFeedbackSubmitted={handleFeedbackSubmitted}
+                      commentPrefs={commentPrefsRef}
+                      isFocused={topIsFocused}
+                      onCopied={(msg) => showToast(msg, 2600)}
+                      onNotNeeded={markNotNeeded}
+                    />
+                  ) : (
+                    <Card
+                      key={topCard.id}
+                      card={topCard}
+                      leaving={leaving.has(topCard.id)}
+                      enriching={enriching.has(topCard.id)}
+                      subject={getSubject(topCard)}
+                      meta={getMeta(topCard)}
+                      summary={summaries[topCard.id]}
+                      onAction={handleAction}
+                      onEnrichPhone={handleEnrichPhone}
+                      onSetFocus={handleSetFocus}
+                      onDraftEmail={handleDraftEmail}
+                      isFocused={topIsFocused}
+                      onSuppressTitle={suppressTitle}
+                      onSuppressCompany={suppressCompany}
+                      onSuppressSignal={suppressSignal}
+                      onAdjustScore={adjustScore}
+                      onNotNeeded={markNotNeeded}
+                      onFeedbackSubmitted={handleFeedbackSubmitted}
+                    />
+                  )}
+                </SwipeCard>
+              )}
               {remaining.length > 0 && <QueueIndicator count={remaining.length} breakdown={breakdown} />}
             </div>
           );
@@ -3032,6 +3010,7 @@ function LinkedInCommentCard({
 // ═══════════════════════════════════════════════════════════════════
 function QueueIndicator({ count, breakdown }) {
   const chips = [
+    breakdown.batch     > 0 && { icon: "🤝", label: "daily batch" },
     breakdown.movements > 0 && { icon: "📈", label: `${breakdown.movements} movement${breakdown.movements > 1 ? "s" : ""}` },
     breakdown.top       > 0 && { icon: "🎯", label: `${breakdown.top} top lead${breakdown.top > 1 ? "s" : ""}` },
     breakdown.comments  > 0 && { icon: "💬", label: `${breakdown.comments} LinkedIn` },
@@ -3209,7 +3188,7 @@ function ManualAssistCard({ item, onRecordConnectionSent, onMarkAccepted, onReco
 // per-lead BatchLeadCards on "Review one-by-one".
 // ═══════════════════════════════════════════════════════════════════
 function DailyBatchCard({
-  batch, collapsed, onToggleCollapsed, expanded, onToggleExpand,
+  batch, expanded, onToggleExpand, onDefer,
   onSendAll, onSkipAll, onSendOne, onSkipOne, onEditField,
   editingDraft, setEditingDraft, onFeedbackSubmitted,
 }) {
@@ -3222,20 +3201,8 @@ function DailyBatchCard({
   const totalConnChars = (batch.leads || []).reduce((s, l) => s + (l.connection_note?.length || 0), 0);
   const avgConnChars = Math.round(totalConnChars / count);
 
-  // item 5: collapsed by default to a compact single-line entry so the
-  // unified task stack stays the focal point. Click to expand.
-  if (collapsed) {
-    return (
-      <button className="batch-compact" onClick={onToggleCollapsed} type="button">
-        <span className="batch-compact-icon">🤝</span>
-        <span className="batch-compact-text">
-          Daily LinkedIn batch · <strong>{count} ready</strong>
-        </span>
-        <span className="batch-compact-cta">Review →</span>
-      </button>
-    );
-  }
-
+  // One-at-a-time queue: this card renders as the FOCUSED step. "Later"
+  // defers it to the back of the queue (hidden when it's the only step).
   return (
     <div className="batch-card">
       <div className="batch-hdr">
@@ -3248,9 +3215,11 @@ function DailyBatchCard({
             </div>
           </div>
         </div>
-        <button className="batch-collapse-btn" onClick={onToggleCollapsed} type="button" title="Collapse">
-          ▲
-        </button>
+        {onDefer && (
+          <button className="batch-later-btn" onClick={onDefer} type="button" title="Come back to this — show the next task">
+            Later →
+          </button>
+        )}
       </div>
 
       {/* Send-mode toggle (per-batch). Default Manual — the team sends by

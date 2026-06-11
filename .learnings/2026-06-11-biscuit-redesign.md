@@ -19,6 +19,22 @@ UX moves:
   coming" note removed.
 - Keyboard hints now render as key caps (.kb-key).
 
+## Round 2 (same day): true one-at-a-time UX
+Samarth's follow-up: round 1 only reskinned — batch row + follow-ups still
+stacked around the focused card. Now there is ONE unified queue:
+- The daily batch is a queue STEP (first, as the daily ritual) rendered
+  full-card when focused, with "Later →" deferring it to the back of the
+  session queue (deferStep / `deferred` state; key "batch" | card.id).
+- LinkedIn follow-ups (ma-queue) are NOT rendered at all for now —
+  Unipile drives that state; outreach handlers + proxies stay wired.
+- The stage (.task-stack) is flex-centered with min-height ≈ viewport so
+  a short card sits centered like Biscuit; tall cards scroll naturally.
+- Header dots + queue-indicator count the batch step too.
+- topCardRef is null while the batch step is focused, so D/S/Enter and
+  swipe can never act on a hidden task card.
+- DailyBatchCard lost its collapsed/compact mode; sendMode resets to
+  "manual" on remount after a defer (safe default, accepted).
+
 ## Gotchas for next time
 - Old CSS vars (--t1/--t2/--acc/--neu-*) are kept as aliases in :root —
   JSX has inline `var(--t2)` usages; don't delete the alias block.

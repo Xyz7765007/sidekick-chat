@@ -435,9 +435,15 @@ body { position: relative; }
   to   { opacity: 1; transform: translateY(0) scale(1); }
 }
 
+/* The stage: one focused step, vertically centered when it's short
+   (Biscuit feel); tall cards just grow and the page scrolls. */
 .task-stack {
   position: relative;
   margin-bottom: 16px;
+  display: flex;
+  flex-direction: column;
+  justify-content: center;
+  min-height: calc(100dvh - 200px);
 }
 .card-stack { padding: 26px 28px 22px; }
 
@@ -973,9 +979,27 @@ body { position: relative; }
   border-radius: var(--r);
   box-shadow: var(--shadow);
   padding: 22px 24px;
-  margin-bottom: 22px;
+  margin-bottom: 0;
   position: relative;
+  animation: cardIn 0.48s var(--ease-out) forwards;
 }
+
+/* "Later →" — defer the focused step to the back of the queue */
+.batch-later-btn {
+  border: 1px solid var(--border);
+  background: var(--card);
+  color: var(--text-2);
+  border-radius: 8px;
+  padding: 7px 13px;
+  font-size: 12px;
+  font-weight: 600;
+  font-family: inherit;
+  cursor: pointer;
+  flex-shrink: 0;
+  white-space: nowrap;
+  transition: all 0.14s var(--ease-spring);
+}
+.batch-later-btn:hover { color: var(--text); border-color: var(--border-2); transform: translateY(-1px); }
 .batch-hdr {
   display: flex; justify-content: space-between; align-items: flex-start;
   margin-bottom: 14px;
@@ -2020,6 +2044,7 @@ body { position: relative; }
   .batch-ctas { flex-direction: column; }
   .batch-ctas .btn { width: 100%; justify-content: center; }
   .batch-compact { padding: 12px 14px; }
+  .task-stack { min-height: calc(100dvh - 160px); }
   .queue-indicator { padding: 12px 14px; max-width: 100%; }
   .queue-breakdown { gap: 6px; }
   .li-angles-row { gap: 6px; }
