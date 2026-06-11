@@ -2629,10 +2629,15 @@ function LinkedInCommentCard({
   const [chosenAngleId, setChosenAngleId] = useState(null);
   const [comment, setComment] = useState("");
   const [commentStatus, setCommentStatus] = useState("idle"); // idle | loading | ready | error
-  // item 16: read the WHOLE post inline (no app exit). Full text is already
-  // client-side in card.signal; we sanitize out internal scoring before showing.
+  // item 16: read the WHOLE post inline (no app exit). The feed now serves the
+  // RAW post text (card.post_text, written at scan time — Samarth 2026-06-11:
+  // "Read full post" must show the actual post, not the summary). Legacy tasks
+  // created before the backend change have no post_text, so fall back to the
+  // internal-scrubbed signal (summary-ish, better than nothing; those tasks
+  // age out of the feed within 7 days).
   const [showFullPost, setShowFullPost] = useState(false);
-  const fullPostText = stripInternalSignal(formatSignalText(card.signal));
+  const rawPostText = (card.post_text || "").trim();
+  const fullPostText = rawPostText || stripInternalSignal(formatSignalText(card.signal));
   const hasFullPost = !!fullPostText;
 
   // Lazy-fetch angles when this card mounts (it only mounts when it's the
