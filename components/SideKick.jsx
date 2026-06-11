@@ -751,6 +751,20 @@ export default function SideKick() {
   // complaint (pt6/pt7). Holds the trimmed card object or null.
   const [focusLead, setFocusLead] = useState(null);
 
+  // ─── Chat panel (2026-06-11 redesign) ──────────────────────────
+  // Chat lives in a floating panel (launcher bottom-right) so the task
+  // queue stays the only thing in the main column. `chatUnread` lights a
+  // dot on the launcher when a bot reply lands while the panel is closed.
+  const [chatOpen, setChatOpen] = useState(false);
+  const [chatUnread, setChatUnread] = useState(false);
+  const chatOpenRef = useRef(chatOpen);
+  chatOpenRef.current = chatOpen;
+
+  // ─── Session progress (header queue dots) ──────────────────────
+  // Counts tasks handled this session so the header can show Biscuit-style
+  // progress dots (done → green, current → orange, queued → neutral).
+  const [sessionDone, setSessionDone] = useState(0);
+
   // ─── Email draft modal (pt4 V1: draft + edit + copy) ───────────
   // V1 does NOT send. It composes an editable draft client-side from the
   // lead's card data, the operator edits it, then copies to their mail
@@ -1020,12 +1034,12 @@ export default function SideKick() {
     return () => window.removeEventListener("mousemove", onMove);
   }, []);
 
-  // ─── Chat auto-scroll on new message ────────────────────────────
+  // ─── Chat auto-scroll on new message / panel open ───────────────
   useEffect(() => {
     if (chatScrollRef.current) {
       chatScrollRef.current.scrollTop = chatScrollRef.current.scrollHeight;
     }
-  }, [messages]);
+  }, [messages, chatOpen]);
 
   // ─── Keyboard shortcuts for the focused top card (item A) ───────
   // Desktop ergonomics — act on the single visible card without reaching
@@ -1049,7 +1063,7 @@ export default function SideKick() {
         const tag = el.tagName;
         if (tag === "INPUT" || tag === "TEXTAREA" || tag === "SELECT" || el.isContentEditable) return;
       }
-      if (chatBusy || emailDraft) return;
+      if (chatBusy || emailDraft || chatOpenRef.current) return;
       const top = topCardRef.current;
       if (!top) return;
       // Re-entry guard: ignore if the top card is already animating out
@@ -1253,6 +1267,7 @@ export default function SideKick() {
             stickyTopIdRef.current = null;
           }
         }, 300);
+        setSessionDone((n) => n + 1);
         showToast(action === "done" ? "Marked done ✓" : "Skipped");
       } else {
         setLeaving((s) => { const ns = new Set(s); ns.delete(taskId); return ns; });
@@ -1358,6 +1373,8 @@ export default function SideKick() {
       const data = await r.json();
       if (data.ok) {
         updateMessage(pendingId, data.reply);
+        // Light the launcher dot if the operator closed the panel mid-reply.
+        if (!chatOpenRef.current) setChatUnread(true);
         // Refresh action means re-pull the feed. Scans are handled on SignalScope, not here.
         if (data.action?.type === "refresh") {
           await fetchFeed();
@@ -1382,6 +1399,9 @@ export default function SideKick() {
   // needs so the POST body stays small. Clears with a null arg.
   function handleSetFocus(card) {
     if (!card) { setFocusLead(null); return; }
+    // Focusing a lead is an intent to chat — open the panel right away.
+    setChatOpen(true);
+    setChatUnread(false);
     setFocusLead({
       lead_name: card.lead_name || "",
       company: card.company || "",
@@ -1524,6 +1544,7 @@ export default function SideKick() {
           setLeaving((s) => { const ns = new Set(s); ns.delete(taskId); return ns; });
           if (stickyTopIdRef.current === taskId) stickyTopIdRef.current = null;
         }, 300);
+        setSessionDone((n) => n + 1);
         showToast("Marked not needed");
       } else {
         setLeaving((s) => { const ns = new Set(s); ns.delete(taskId); return ns; });
@@ -1607,7 +1628,7 @@ Best,
             <div className="avatar"><div className="dot" /></div>
             <div className="brand">
               <div className="brand-name">Side Kick</div>
-              <div className="brand-sub">VELOKA · TASKS</div>
+              <div className="brand-sub">your Veloka pipeline sidekick</div>
             </div>
           </div>
           <div className="hdr-r">
@@ -1617,19 +1638,11 @@ Best,
               disabled={batchGenerating}
               title="Regenerate today's LinkedIn batch (replaces existing)"
             >
-              {batchGenerating ? <><span className="spinner spinner-sm" /> Generating…</> : "↻ Regenerate batch"}
+              {batchGenerating ? <><span className="spinner spinner-sm" /> Generating…</> : "↻ Batch"}
             </button>
-            <div className="counter">
-              <span className="count-num">{count}</span>
-              <span style={{ color: "var(--t2)" }}>pending</span>
-            </div>
+            <HeaderQueue pending={count} done={sessionDone} loading={loading || !!fetchError} />
           </div>
         </header>
-
-        <div className="wip">
-          <span className="wip-dot" />
-          Email engine in development · LinkedIn DMs + tasks live
-        </div>
 
         <ScanBanner status={scanStatus} concurrentRunsCount={scanConcurrentCount} />
 
@@ -1722,24 +1735,31 @@ Best,
             "waiting" entries. The exec sends by hand; we hand them the copy
             and record the state. Sits alongside today's batch, above the
             unified task stack. NO automation. */}
-        {outreachQueue.length > 0 && (
-          <div className="ma-queue">
-            <div className="ma-queue-hdr">
-              <span className="ma-queue-icon">🤝</span>
-              <span className="ma-queue-title">LinkedIn follow-ups · {outreachQueue.filter(i => i.nextAction?.type !== "waiting").length} to action</span>
+        {(() => {
+          // "Accepted on LinkedIn?" confirmation boxes are hidden — Unipile
+          // flags acceptance automatically, so the operator never needs to
+          // record it by hand. Waiting entries stay (muted) for visibility.
+          const visibleQueue = outreachQueue.filter(i => i.nextAction?.type !== "accept");
+          if (visibleQueue.length === 0) return null;
+          return (
+            <div className="ma-queue">
+              <div className="ma-queue-hdr">
+                <span className="ma-queue-icon">🤝</span>
+                <span className="ma-queue-title">LinkedIn follow-ups · {visibleQueue.filter(i => i.nextAction?.type !== "waiting").length} to action</span>
+              </div>
+              {visibleQueue.map(item => (
+                <ManualAssistCard
+                  key={item.id}
+                  item={item}
+                  onRecordConnectionSent={recordConnectionSent}
+                  onMarkAccepted={markConnectionAccepted}
+                  onRecordDmSent={recordDmSent}
+                  onCopied={(msg) => showToast(msg, 2600)}
+                />
+              ))}
             </div>
-            {outreachQueue.map(item => (
-              <ManualAssistCard
-                key={item.id}
-                item={item}
-                onRecordConnectionSent={recordConnectionSent}
-                onMarkAccepted={markConnectionAccepted}
-                onRecordDmSent={recordDmSent}
-                onCopied={(msg) => showToast(msg, 2600)}
-              />
-            ))}
-          </div>
-        )}
+          );
+        })()}
 
         {/* ─── UNIFIED TASK STACK (Biscuit-style one-at-a-time) ─────
             Per May 20 client feedback ("check how it was for truffle"
@@ -1851,58 +1871,91 @@ Best,
           );
         })()}
 
-        {/* Chat thread */}
-        {historyLoaded && (
-          <div className="chat-thread" ref={chatScrollRef}>
-            {messages.map((m) => (
-              <ChatBubble key={m.id} msg={m} />
-            ))}
-          </div>
-        )}
       </main>
 
-      {/* Sticky chat input */}
-      <div className="chat-input-wrap">
-        {/* pt7: focus chip — shows which lead chat is "about". Click ✕ to clear. */}
-        {focusLead && (
-          <div className="chat-focus-chip">
-            <span className="chat-focus-icon">🎯</span>
-            <span className="chat-focus-label">
-              Talking about: <strong>{focusLead.lead_name || "this lead"}</strong>
-              {focusLead.company ? ` · ${focusLead.movement_type === "Exited" ? "Ex-" : ""}${focusLead.company}` : ""}
-            </span>
+      {/* ─── Chat — floating launcher + slide-up panel (2026-06-11) ───
+          The assistant lives in its own surface so the task queue stays
+          the only thing in the main column. The launcher shows a green
+          dot when a reply landed while the panel was closed. */}
+      {!chatOpen && (
+        <button
+          className="chat-fab"
+          onClick={() => { setChatOpen(true); setChatUnread(false); }}
+          title="Chat with Side Kick"
+          aria-label="Open chat"
+          type="button"
+        >
+          💬
+          {chatUnread && <span className="chat-fab-dot" aria-hidden="true" />}
+        </button>
+      )}
+
+      {chatOpen && (
+        <div className="chat-panel" role="dialog" aria-label="Side Kick chat">
+          <div className="chat-panel-hdr">
+            <div className="chat-avatar"><div className="dot" /></div>
+            <div className="chat-panel-title">Ask Side Kick</div>
             <button
-              className="chat-focus-clear"
-              onClick={() => setFocusLead(null)}
-              title="Clear focus — chat about anything"
+              className="chat-panel-close"
+              onClick={() => setChatOpen(false)}
+              title="Close chat"
+              aria-label="Close chat"
               type="button"
             >✕</button>
           </div>
-        )}
-        <div className="chat-input-inner">
-          <input
-            type="text"
-            value={input}
-            onChange={(e) => setInput(e.target.value)}
-            onKeyDown={(e) => { if (e.key === "Enter") handleSubmit(e); }}
-            placeholder={chatBusy ? "Thinking…" : focusLead ? `Ask about ${focusLead.lead_name || "this lead"}…` : "Talk to Side Kick…"}
-            disabled={chatBusy}
-            className="chat-input"
-            autoComplete="off"
-            autoCapitalize="off"
-            autoCorrect="off"
-            spellCheck="false"
-          />
-          <button
-            onClick={handleSubmit}
-            disabled={chatBusy || !input.trim()}
-            className="chat-send"
-            aria-label="Send"
-          >
-            {chatBusy ? <span className="spinner spinner-sm" /> : "→"}
-          </button>
+
+          {historyLoaded && (
+            <div className="chat-thread" ref={chatScrollRef}>
+              {messages.map((m) => (
+                <ChatBubble key={m.id} msg={m} />
+              ))}
+            </div>
+          )}
+
+          {/* pt7: focus chip — shows which lead chat is "about". Click ✕ to clear. */}
+          {focusLead && (
+            <div className="chat-focus-chip">
+              <span className="chat-focus-icon">🎯</span>
+              <span className="chat-focus-label">
+                Talking about: <strong>{focusLead.lead_name || "this lead"}</strong>
+                {focusLead.company ? ` · ${focusLead.movement_type === "Exited" ? "Ex-" : ""}${focusLead.company}` : ""}
+              </span>
+              <button
+                className="chat-focus-clear"
+                onClick={() => setFocusLead(null)}
+                title="Clear focus — chat about anything"
+                type="button"
+              >✕</button>
+            </div>
+          )}
+
+          <div className="chat-input-wrap">
+            <div className="chat-input-inner">
+              <input
+                type="text"
+                value={input}
+                onChange={(e) => setInput(e.target.value)}
+                onKeyDown={(e) => { if (e.key === "Enter") handleSubmit(e); }}
+                placeholder={chatBusy ? "Thinking…" : focusLead ? `Ask about ${focusLead.lead_name || "this lead"}…` : "Talk to Side Kick…"}
+                disabled={chatBusy}
+                className="chat-input"
+                autoComplete="off"
+                autoCapitalize="off"
+                autoCorrect="off"
+                spellCheck="false"
+              />
+              <button
+                onClick={handleSubmit}
+                disabled={chatBusy || !input.trim()}
+                className="chat-send"
+                aria-label="Send"
+              >
+                {chatBusy ? <span className="spinner spinner-sm" /> : "→"}
+              </button>
+            </div>
+          </div>
         </div>
-      </div>
+      )}
 
       {/* pt4 V1: email draft modal — edit + copy, no send */}
       {emailDraft && (
@@ -1933,6 +1986,36 @@ Best,
         )}
       </div>
     </>
+  );
+}
+
+// ─── Header queue progress (Biscuit-style dots) ──────────────────
+// done → green, current → orange (scaled), queued → neutral. When the
+// session total exceeds MAX_DOTS the dots map proportionally so the row
+// never overflows the header.
+function HeaderQueue({ pending, done, loading }) {
+  if (loading) return null;
+  if (pending === 0) return <span className="queue-alldone">All done ✓</span>;
+  const total = done + pending;
+  const MAX_DOTS = 10;
+  let states;
+  if (total <= MAX_DOTS) {
+    states = Array.from({ length: total }, (_, i) =>
+      i < done ? "done" : i === done ? "current" : ""
+    );
+  } else {
+    const doneDots = Math.min(MAX_DOTS - 1, Math.round((done / total) * MAX_DOTS));
+    states = Array.from({ length: MAX_DOTS }, (_, i) =>
+      i < doneDots ? "done" : i === doneDots ? "current" : ""
+    );
+  }
+  return (
+    <div className="counter" title={`${pending} task${pending === 1 ? "" : "s"} left · ${done} handled this session`}>
+      <span className="queue-label">{pending} left</span>
+      <div className="queue-dots">
+        {states.map((s, i) => <div key={i} className={`q-dot ${s}`} />)}
+      </div>
+    </div>
   );
 }
 
@@ -2077,9 +2160,6 @@ function EmailDraftModal({ draft, onChange, onClose, onCopied }) {
         <div className="email-modal-hdr">
           <span>✉ Draft email — {draft.lead_name}</span>
           <button className="email-modal-close" onClick={onClose} type="button">✕</button>
-        </div>
-        <div className="email-modal-note">
-          V1: edit then copy or open in your mail client. Sending from the app is coming in V2.
         </div>
         <label className="email-field">
           <span>To {draft.to ? "" : "(no email on file — add the new-company address)"}</span>
@@ -2536,7 +2616,9 @@ function Card({ card, leaving, enriching, subject, meta, summary, onAction, onEn
       </div>
 
       {/* Keyboard hint — desktop only (hidden on touch via CSS) */}
-      <div className="card-kbd-hint" aria-hidden="true">⌨ D done · S skip</div>
+      <div className="card-kbd-hint" aria-hidden="true">
+        <span className="kb-key">↵</span> done · <span className="kb-key">S</span> skip
+      </div>
     </div>
   );
 }
@@ -2933,7 +3015,10 @@ function LinkedInCommentCard({
 
       {/* Keyboard hint — desktop only (hidden on touch via CSS) */}
       <div className="card-kbd-hint" aria-hidden="true">
-        ⌨ D done · S skip{status === "ready" && angles.length > 0 ? " · 1/2/3 angle" : ""}
+        <span className="kb-key">↵</span> done · <span className="kb-key">S</span> skip
+        {status === "ready" && angles.length > 0 && (
+          <> · <span className="kb-key">1</span><span className="kb-key">2</span><span className="kb-key">3</span> angle</>
+        )}
       </div>
     </div>
   );
@@ -3063,24 +3148,12 @@ function ManualAssistCard({ item, onRecordConnectionSent, onMarkAccepted, onReco
     );
   }
 
-  if (na.type === "accept") {
-    return (
-      <div className="ma-card">
-        {header}
-        <div className="ma-step-label">Connection request sent. Accepted on LinkedIn?</div>
-        <div className="ma-ctas">
-          {linkedinUrl && (
-            <a className="btn" href={linkedinUrl} target="_blank" rel="noopener noreferrer">
-              Open profile
-            </a>
-          )}
-          <button className="btn primary" onClick={() => onMarkAccepted(item.id)}>
-            Mark accepted
-          </button>
-        </div>
-      </div>
-    );
-  }
+  // "accept" boxes are intentionally NOT rendered — Unipile flags
+  // connection acceptance automatically, so asking the operator to
+  // confirm it by hand is dead UI. (Parent also filters these out;
+  // this is defense-in-depth. The mark-connected proxy stays wired
+  // for the chat orchestrator / future automation.)
+  if (na.type === "accept") return null;
 
   if (na.type === "dm") {
     const step = na.step;

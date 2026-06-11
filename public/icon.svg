@@ -1,6 +1,6 @@
 <svg xmlns="http://www.w3.org/2000/svg" width="512" height="512" viewBox="0 0 512 512" role="img" aria-label="Side Kick">
-  <rect width="512" height="512" rx="112" fill="#E4E0DA"/>
-  <rect x="96" y="96" width="320" height="320" rx="80" fill="#EAE6DE"/>
-  <circle cx="256" cy="256" r="96" fill="#7B9FE8"/>
-  <circle cx="256" cy="256" r="96" fill="none" stroke="#5876C2" stroke-opacity="0.25" stroke-width="28"/>
+  <rect width="512" height="512" rx="112" fill="#F5F3EE"/>
+  <rect x="96" y="96" width="320" height="320" rx="80" fill="#FDF4EC"/>
+  <circle cx="256" cy="256" r="96" fill="#E07B3A"/>
+  <circle cx="256" cy="256" r="96" fill="none" stroke="#C4601C" stroke-opacity="0.3" stroke-width="28"/>
 </svg>
