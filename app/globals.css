@@ -2000,6 +2000,14 @@ body { position: relative; }
   }
   .brand-sub { display: none; }
   .queue-label { display: none; }
+  /* The dot row must never force the page wider than the viewport
+     (body is overflow-x hidden, so overflow CLIPS — 2026-06-11 QA).
+     Cap visible dots and let the left side shrink. */
+  .hdr { gap: 8px; }
+  .hdr-l { flex-shrink: 1; min-width: 0; }
+  .brand-name { font-size: 17px; }
+  .hdr-r { flex-shrink: 0; }
+  .q-dot:nth-child(n+7) { display: none; }
   .card { padding: 16px; }
   .card-stack { padding: 18px 18px 16px; }
   .card-name { font-size: 17px; }
