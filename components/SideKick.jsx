@@ -2,6 +2,7 @@
 
 import { useEffect, useMemo, useRef, useState, useCallback } from "react";
 import { createPortal } from "react-dom";
+import { FEATURES } from "../lib/features";
 
 // ═══════════════════════════════════════════════════════════════════
 // SIDE KICK — Main chatbot UI
@@ -1274,18 +1275,22 @@ export default function SideKick() {
     ]);
     const other = allCards.filter(c => !accountedFor.has(c.id));
     const byScore = (a, b) => (b.score || 0) - (a.score || 0);
-    const sortedStack = [
-      ...movements.sort(byScore),
-      ...topLeads.sort(byScore),
-      ...liComments.sort(byScore),
-      ...gaVisitors.sort(byScore),
-      ...other.sort(byScore),
-    ];
+    // Kunal Jun12 strip: when otherCards is off, the queue shows ONLY
+    // LinkedIn-post cards — movement / top-leads / GA cards are hidden.
+    const sortedStack = FEATURES.otherCards
+      ? [
+          ...movements.sort(byScore),
+          ...topLeads.sort(byScore),
+          ...liComments.sort(byScore),
+          ...gaVisitors.sort(byScore),
+          ...other.sort(byScore),
+        ]
+      : liComments.sort(byScore);
 
     // 2. Daily batch step — merge all pending_approval records into ONE virtual
     //    batch. Dedup by record id, then by name+company.
     let mergedBatch = null;
-    if (autoBatches.length) {
+    if (FEATURES.connectionFlow && autoBatches.length) {
       const allLeads = autoBatches.flatMap(b => b.leads || []);
       const seenIds = new Set();
       const seenNameCo = new Set();
@@ -1343,12 +1348,17 @@ export default function SideKick() {
 
     // 1. Eager: the focused post. 2. Prefetch: exactly the next one.
     // fetchSummaryFor is a no-op on undefined (batch step / end of queue).
-    fetchSummaryFor(target);
-    fetchSummaryFor(next);
+    // Kunal Jun12 strip: skip warming the AI summary/angles entirely when
+    // neither the summary nor comment-assist surfaces are shown — the stripped
+    // card renders the raw post and needs no model call.
+    if (FEATURES.summary) {
+      fetchSummaryFor(target);
+      fetchSummaryFor(next);
+    }
     // Prefetch the next LinkedIn-engagement card's comment brief too, so its
     // angles are ready the instant it becomes focused. fetchCommentAngles is
     // a no-op for non-LI cards and idempotent for already-cached ones.
-    if (next && next.task_type === "linkedin_engagement") {
+    if ((FEATURES.commentAssist || FEATURES.summary) && next && next.task_type === "linkedin_engagement") {
       fetchCommentAngles(next);
     }
   }, [orderedQueue, fetchSummaryFor, fetchCommentAngles]);
@@ -1814,7 +1824,7 @@ Best,
               progress centered, action buttons right. */}
           <div className="hdr-c">
             <HeaderQueue
-              pending={count + (autoBatches.some(b => (b.leads || []).length > 0) ? 1 : 0)}
+              pending={count + (FEATURES.connectionFlow && autoBatches.some(b => (b.leads || []).length > 0) ? 1 : 0)}
               done={sessionDone}
               loading={loading || !!fetchError}
             />
@@ -1827,22 +1837,24 @@ Best,
             >
               ↩<span className="hdr-action-label"> Handled</span>
             </button>
-            <button
-              className="hdr-action"
-              onClick={() => {
-                // item 1 (Kunal Jun12): confirm before regenerating — a misclick
-                // wipes the existing batch. Native confirm (3-dependency rule).
-                if (typeof window !== "undefined" &&
-                    !window.confirm("Are you sure you want to reload it?")) return;
-                handleGenerateBatch(true);
-              }}
-              disabled={batchGenerating}
-              title="Regenerate today's LinkedIn batch (replaces existing)"
-            >
-              {batchGenerating
-                ? <><span className="spinner spinner-sm" /><span className="hdr-action-label"> Generating…</span></>
-                : <>↻<span className="hdr-action-label"> Batch</span></>}
-            </button>
+            {FEATURES.connectionFlow && (
+              <button
+                className="hdr-action"
+                onClick={() => {
+                  // item 1 (Kunal Jun12): confirm before regenerating — a misclick
+                  // wipes the existing batch. Native confirm (3-dependency rule).
+                  if (typeof window !== "undefined" &&
+                      !window.confirm("Are you sure you want to reload it?")) return;
+                  handleGenerateBatch(true);
+                }}
+                disabled={batchGenerating}
+                title="Regenerate today's LinkedIn batch (replaces existing)"
+              >
+                {batchGenerating
+                  ? <><span className="spinner spinner-sm" /><span className="hdr-action-label"> Generating…</span></>
+                  : <>↻<span className="hdr-action-label"> Batch</span></>}
+              </button>
+            )}
           </div>
         </header>
 
@@ -1994,7 +2006,7 @@ Best,
           The assistant lives in its own surface so the task queue stays
           the only thing in the main column. The launcher shows a green
           dot when a reply landed while the panel was closed. */}
-      {!chatOpen && (
+      {FEATURES.chat && !chatOpen && (
         <button
           className="chat-fab"
           onClick={() => { setChatOpen(true); setChatUnread(false); }}
@@ -2007,7 +2019,7 @@ Best,
         </button>
       )}
 
-      {chatOpen && (
+      {FEATURES.chat && chatOpen && (
         <div className="chat-panel" role="dialog" aria-label="Side Kick chat">
           <div className="chat-panel-hdr">
             <div className="chat-avatar"><div className="dot" /></div>
@@ -2819,6 +2831,12 @@ function LinkedInCommentCard({
   const isDisabled = leaving;
   const postUrl = card.url || card.lead_linkedin || "";
 
+  // Kunal Jun12 strip: with comment-assist + summary off, the card is just
+  // the original post text + a "Comment on LinkedIn" CTA. Flip the flags in
+  // lib/features.js to bring the AI angles / generated comment / summary back.
+  const showCommentAssist = FEATURES.commentAssist;
+  const showSummary = FEATURES.summary;
+
   const [chosenAngleId, setChosenAngleId] = useState(null);
   const [comment, setComment] = useState("");
   const [commentStatus, setCommentStatus] = useState("idle"); // idle | loading | ready | error
@@ -2836,7 +2854,9 @@ function LinkedInCommentCard({
   // Lazy-fetch angles when this card mounts (it only mounts when it's the
   // visible top card — the stack renders one card at a time).
   useEffect(() => {
-    onRequestAngles?.();
+    // Only hit /api/comment-angles when the AI summary or comment angles are
+    // actually shown — the stripped card needs neither.
+    if (showCommentAssist || showSummary) onRequestAngles?.();
     setShowFullPost(false);
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [card.id]);
@@ -2973,6 +2993,12 @@ function LinkedInCommentCard({
     captureCommentExemplar(comment);
   }
 
+  // Stripped-card CTA (Kunal Jun12): no AI comment to copy — just open the
+  // post so the operator can write their comment on LinkedIn directly.
+  function openOnLinkedInToComment() {
+    if (postUrl) window.open(postUrl, "_blank", "noopener,noreferrer");
+  }
+
   // Connector title identity (item 14) — same helper every other card uses.
   const connector = getConnector(card);
 
@@ -2995,15 +3021,33 @@ function LinkedInCommentCard({
 
       {/* Post summary + bullets (public-facing, model-generated) */}
       <div className="li-post-block">
-        {status === "loading" && (
+        {!showSummary && (
+          /* Kunal Jun12 strip: show the ORIGINAL post text inline — no AI
+             summary, no bullets, no "read full post" toggle. */
+          <>
+            {hasFullPost ? (
+              <div className="li-fullpost">{fullPostText}</div>
+            ) : (
+              <div className="li-post-error">No post text on file — open the post on LinkedIn to read and comment.</div>
+            )}
+            {postUrl && (
+              <div className="li-post-actions">
+                <a className="li-view-post" href={postUrl} target="_blank" rel="noopener noreferrer">
+                  ↗ Open on LinkedIn
+                </a>
+              </div>
+            )}
+          </>
+        )}
+        {showSummary && status === "loading" && (
           <div className="card-summary card-summary-loading">
             <span className="spinner spinner-sm" /> Reading the post…
           </div>
         )}
-        {status === "error" && (
+        {showSummary && status === "error" && (
           <div className="li-post-error">Couldn't load the post brief. You can still open the post and Mark Done.</div>
         )}
-        {status === "ready" && (postSummary || bullets.length > 0) && (
+        {showSummary && status === "ready" && (postSummary || bullets.length > 0) && (
           <>
             {/* Highlight-to-feedback on the most natural-to-highlight text on the
                 card: the AI summary line + the bullet points. Maps to the
@@ -3027,25 +3071,29 @@ function LinkedInCommentCard({
         )}
         {/* item 16: read the whole post WITHOUT leaving the app. Inline toggle
             reveals the full (internal-scrubbed) post text; a secondary link
-            still opens it on LinkedIn for those who want the live thread. */}
-        <div className="li-post-actions">
-          {hasFullPost && (
-            <button
-              className="li-fullpost-toggle"
-              onClick={(e) => { e.stopPropagation(); setShowFullPost(v => !v); }}
-              type="button"
-              aria-expanded={showFullPost}
-            >
-              {showFullPost ? "↑ Hide full post" : "↓ Read full post here"}
-            </button>
-          )}
-          {postUrl && (
-            <a className="li-view-post" href={postUrl} target="_blank" rel="noopener noreferrer">
-              ↗ Open on LinkedIn
-            </a>
-          )}
-        </div>
-        {showFullPost && hasFullPost && (
+            still opens it on LinkedIn for those who want the live thread.
+            Only in summary mode — the stripped card already shows the full
+            post inline above. */}
+        {showSummary && (
+          <div className="li-post-actions">
+            {hasFullPost && (
+              <button
+                className="li-fullpost-toggle"
+                onClick={(e) => { e.stopPropagation(); setShowFullPost(v => !v); }}
+                type="button"
+                aria-expanded={showFullPost}
+              >
+                {showFullPost ? "↑ Hide full post" : "↓ Read full post here"}
+              </button>
+            )}
+            {postUrl && (
+              <a className="li-view-post" href={postUrl} target="_blank" rel="noopener noreferrer">
+                ↗ Open on LinkedIn
+              </a>
+            )}
+          </div>
+        )}
+        {showSummary && showFullPost && hasFullPost && (
           <FeedbackCapture
             itemType="comment"
             leadName={card.lead_name}
@@ -3058,7 +3106,7 @@ function LinkedInCommentCard({
       </div>
 
       {/* Angle chips */}
-      {status === "ready" && angles.length > 0 && (
+      {showCommentAssist && status === "ready" && angles.length > 0 && (
         <div className="li-angles">
           <div className="li-angles-hdr">
             <span className="li-angles-label">Pick an angle to comment from:</span>
@@ -3103,7 +3151,7 @@ function LinkedInCommentCard({
       )}
 
       {/* Generated comment (editable) + regenerate */}
-      {chosenAngleId && (
+      {showCommentAssist && chosenAngleId && (
         <div className="li-comment-block">
           {commentStatus === "loading" && (
             <div className="card-summary card-summary-loading">
@@ -3157,16 +3205,29 @@ function LinkedInCommentCard({
         </div>
       )}
 
-      {/* Actions: Mark Done / Skip (primary) + focus chat (secondary) */}
+      {/* Actions: Comment-on-LinkedIn CTA (stripped) + Mark Done / Skip */}
       <div className="card-actions-row">
         <div className="card-actions-primary">
-          <button className="btn primary" disabled={isDisabled} onClick={() => onAction(card.id, "done")}>
+          {/* Kunal Jun12 strip: the one CTA on the card — opens the post so the
+              operator comments on LinkedIn directly. */}
+          {!showCommentAssist && (
+            <button
+              className="btn primary"
+              disabled={isDisabled || !postUrl}
+              onClick={openOnLinkedInToComment}
+              type="button"
+              title={postUrl ? "Open this post on LinkedIn to comment" : "No post link available"}
+            >
+              ↗ Comment on LinkedIn
+            </button>
+          )}
+          <button className={`btn ${showCommentAssist ? "primary" : ""}`} disabled={isDisabled} onClick={() => onAction(card.id, "done")}>
             ✓ Mark Done
           </button>
           <button className="btn danger" disabled={isDisabled} onClick={() => onAction(card.id, "skip")}>
             Skip
           </button>
-          {onNotNeeded && (
+          {showCommentAssist && onNotNeeded && (
             <button
               className="btn quiet card-not-needed"
               disabled={isDisabled}
@@ -3178,22 +3239,25 @@ function LinkedInCommentCard({
             </button>
           )}
         </div>
-        <div className="card-actions-secondary">
-          {onSetFocus && (card.lead_name || card.company) && (
-            <button
-              className={`card-icon-btn ${isFocused ? "card-icon-btn-active" : ""}`}
-              onClick={() => onSetFocus(isFocused ? null : card)}
-              title={isFocused ? "Stop focusing chat on this lead" : "Focus chat on this lead"}
-              type="button"
-            >{isFocused ? "🎯" : "💬"}</button>
-          )}
-        </div>
+        {/* Focus-chat button only when chat is enabled. */}
+        {FEATURES.chat && (
+          <div className="card-actions-secondary">
+            {onSetFocus && (card.lead_name || card.company) && (
+              <button
+                className={`card-icon-btn ${isFocused ? "card-icon-btn-active" : ""}`}
+                onClick={() => onSetFocus(isFocused ? null : card)}
+                title={isFocused ? "Stop focusing chat on this lead" : "Focus chat on this lead"}
+                type="button"
+              >{isFocused ? "🎯" : "💬"}</button>
+            )}
+          </div>
+        )}
       </div>
 
       {/* Keyboard hint — desktop only (hidden on touch via CSS) */}
       <div className="card-kbd-hint" aria-hidden="true">
         <span className="kb-key">↵</span> done · <span className="kb-key">S</span> skip · <span className="kb-key">U</span> undo
-        {status === "ready" && angles.length > 0 && (
+        {showCommentAssist && status === "ready" && angles.length > 0 && (
           <> · <span className="kb-key">1</span><span className="kb-key">2</span><span className="kb-key">3</span> angle</>
         )}
       </div>
