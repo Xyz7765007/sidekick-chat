@@ -3023,12 +3023,16 @@ function LinkedInCommentCard({
       <div className="li-post-block">
         {!showSummary && (
           /* Kunal Jun12 strip: show the ORIGINAL post text inline — no AI
-             summary, no bullets, no "read full post" toggle. */
+             summary, no bullets, no "read full post" toggle. Use ONLY the raw
+             post (card.post_text). Do NOT fall back to card.signal: that's the
+             internal brief (suggested comment / evidence / why-it-matters) and
+             must never be shown as if it were the post (repo rule #6). Legacy
+             tasks with no stored post_text just get the open-on-LinkedIn CTA. */
           <>
-            {hasFullPost ? (
-              <div className="li-fullpost">{fullPostText}</div>
+            {rawPostText ? (
+              <div className="li-fullpost">{rawPostText}</div>
             ) : (
-              <div className="li-post-error">No post text on file — open the post on LinkedIn to read and comment.</div>
+              <div className="li-post-error">This post’s text isn’t stored — open it on LinkedIn to read and comment.</div>
             )}
             {postUrl && (
               <div className="li-post-actions">
