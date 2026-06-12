@@ -1,6 +1,6 @@
 "use client";
 
-import { useEffect, useRef, useState, useCallback } from "react";
+import { useEffect, useMemo, useRef, useState, useCallback } from "react";
 import { createPortal } from "react-dom";
 
 // ═══════════════════════════════════════════════════════════════════
@@ -990,8 +990,17 @@ export default function SideKick() {
 
   // Auto-generate trigger: on first chatbot mount of the day, if no
   // pending batch exists, request one. Idempotent on the server side.
+  // item 6 (Kunal Jun12): the recurring daily LinkedIn DM review pop-up is
+  // DISABLED. It auto-generated a batch on first mount each day, surfacing the
+  // DailyBatchCard as a queue step; "Later" only deferred it within the session
+  // so it reappeared the next day. Kunal wants it gone for his reviews. The
+  // batch is no longer auto-generated — it only appears when the operator
+  // explicitly hits the "Batch" (regenerate) action. Flip AUTO_GENERATE_BATCH
+  // to true to restore the old recurring behavior.
+  const AUTO_GENERATE_BATCH = false;
   const autoGenerateAttemptedRef = useRef(false);
   useEffect(() => {
+    if (!AUTO_GENERATE_BATCH) return;
     if (!historyLoaded) return;
     if (autoGenerateAttemptedRef.current) return;
     if (autoBatches.length > 0) {
@@ -1124,47 +1133,27 @@ export default function SideKick() {
     if (cards.length === 0) topCardRef.current = null;
   }, [cards]);
 
-  // ─── Lazy AI summary fetch ──────────────────────────────────────
+  // ─── Lazy AI summary fetch + next-step prefetch (item 8) ────────
   // When the visible top card changes (sticky pin advanced), fire a
   // single Haiku call to /api/summarize and cache the result. The
   // pendingSummariesRef guards against duplicate fetches during the
   // window between fetch start and setState completion.
   //
-  // We resolve the top card here using the same priority order as the
-  // render IIFE — keeping them in sync. This duplicates a few lines
-  // but is cheaper than restructuring the whole component.
-  useEffect(() => {
-    if (cards.length === 0) return;
-    // Mirror the render-side stack composition to find the top card id.
-    const merged = [...cards];
-    if (merged.length === 0) return;
-
-    const priorityOf = c => ({
-      lead_movement: 0,
-      top_x: 2,
-      linkedin_engagement: 3,
-      engagement: 4,
-    })[c.task_type] ?? 5;
-    merged.sort((a, b) => {
-      const pa = priorityOf(a), pb = priorityOf(b);
-      if (pa !== pb) return pa - pb;
-      return (b.score || 0) - (a.score || 0);
-    });
-
-    // Resolve sticky top
-    let target;
-    if (stickyTopIdRef.current && merged.find(c => c.id === stickyTopIdRef.current)) {
-      target = merged.find(c => c.id === stickyTopIdRef.current);
-    } else {
-      target = merged[0];
-    }
+  // item 8 (Kunal Jun12): EXACTLY ONE post is loaded eagerly — the focused
+  // top card. The card immediately AFTER it in the queue is PREFETCHED in the
+  // background so advancing is instant (no spinner on the next post). We never
+  // prefetch more than one ahead. `fetchSummaryFor` is idempotent (cache +
+  // in-flight guards), so calling it for top + next is safe and never dupes.
+  //
+  // We resolve the stack here using the same priority order as the render IIFE
+  // — keeping them in sync. This duplicates a few lines but is cheaper than
+  // restructuring the whole component.
+  const fetchSummaryFor = useCallback((target) => {
     if (!target) return;
-
     // LinkedIn-engagement cards use the dedicated comment flow (item 1),
     // which fetches its own post brief via /api/comment-angles. Don't also
     // spend on an SDR summary it never displays.
     if (target.task_type === "linkedin_engagement") return;
-
     // Already cached / loading / in-flight? Skip.
     if (summaries[target.id]) return;
     if (pendingSummariesRef.current.has(target.id)) return;
@@ -1197,7 +1186,7 @@ export default function SideKick() {
       .finally(() => {
         pendingSummariesRef.current.delete(target.id);
       });
-  }, [cards]);
+  }, [summaries]);
 
   // ─── Lazy comment-angle fetch (item 1) ──────────────────────────
   // When the visible top card is a LinkedIn-engagement card, fetch the
@@ -1261,6 +1250,108 @@ export default function SideKick() {
         pendingCommentDataRef.current.delete(card.id);
       });
   }, [commentData, refreshCommentPrefs]);
+
+  // ─── Ordered queue — single source of truth (2026-06-12) ────────
+  // The exact step order the operator advances through: grouped+score-sorted
+  // task cards, the virtual "batch" step prepended, and deferred steps sunk to
+  // the back. BOTH the render below and the item-8 prefetch effect consume this
+  // so "what we prefetch" can never drift from "what the user sees next".
+  // Steps: { key: "batch"|card.id, card?, batch? }. (Sticky-top focus is
+  // resolved by each consumer against stickyTopIdRef — not memoized here, since
+  // it's a ref read, not reactive state.)
+  const orderedQueue = useMemo(() => {
+    // 1. Task cards, priority-sorted (movements → top → comments → ga → other).
+    const allCards = [...cards];
+    const movements   = allCards.filter(c => c.task_type === "lead_movement");
+    const topLeads    = allCards.filter(c => c.task_type === "top_x");
+    const liComments  = allCards.filter(c => c.task_type === "linkedin_engagement");
+    const gaVisitors  = allCards.filter(c => c.task_type === "engagement");
+    const accountedFor = new Set([
+      ...movements.map(c => c.id),
+      ...topLeads.map(c => c.id),
+      ...liComments.map(c => c.id),
+      ...gaVisitors.map(c => c.id),
+    ]);
+    const other = allCards.filter(c => !accountedFor.has(c.id));
+    const byScore = (a, b) => (b.score || 0) - (a.score || 0);
+    const sortedStack = [
+      ...movements.sort(byScore),
+      ...topLeads.sort(byScore),
+      ...liComments.sort(byScore),
+      ...gaVisitors.sort(byScore),
+      ...other.sort(byScore),
+    ];
+
+    // 2. Daily batch step — merge all pending_approval records into ONE virtual
+    //    batch. Dedup by record id, then by name+company.
+    let mergedBatch = null;
+    if (autoBatches.length) {
+      const allLeads = autoBatches.flatMap(b => b.leads || []);
+      const seenIds = new Set();
+      const seenNameCo = new Set();
+      const dedupedLeads = [];
+      for (const lead of allLeads) {
+        if (seenIds.has(lead.id)) continue;
+        const key = `${(lead.lead_name || "").toLowerCase().trim()}|${(lead.company || "").toLowerCase().trim()}`;
+        if (key !== "|" && seenNameCo.has(key)) continue;
+        seenIds.add(lead.id);
+        if (key !== "|") seenNameCo.add(key);
+        dedupedLeads.push(lead);
+      }
+      dedupedLeads.sort((a, b) => (b.composite_score || 0) - (a.composite_score || 0));
+      if (dedupedLeads.length > 0) {
+        mergedBatch = { batch_id: "all", leads: dedupedLeads, count: dedupedLeads.length };
+      }
+    }
+
+    // 3. The queue: batch first (the daily ritual), then tasks.
+    const steps = [];
+    if (mergedBatch) steps.push({ key: "batch", batch: mergedBatch });
+    for (const c of sortedStack) steps.push({ key: c.id, card: c });
+
+    // 4. Deferred steps sink to the back, in the order they were deferred.
+    const deferredSet = new Set(deferred);
+    return [
+      ...steps.filter(s => !deferredSet.has(s.key)),
+      ...deferred.map(k => steps.find(s => s.key === k)).filter(Boolean),
+    ];
+  }, [cards, autoBatches, deferred]);
+
+  // ─── Eager top + single next-step prefetch (item 8) ─────────────
+  // item 8 (Kunal Jun12): EXACTLY ONE post is loaded eagerly — the focused
+  // top card. The card immediately AFTER it in the queue is PREFETCHED in the
+  // background so advancing is instant (no spinner on the next post). We never
+  // prefetch more than one ahead. Both fetchSummaryFor and fetchCommentAngles
+  // are idempotent (cache + in-flight guards), so calling them for top + next
+  // never dupes. Defined AFTER fetchCommentAngles so its dep ref is in scope.
+  //
+  // Consumes orderedQueue — the SAME step order the render uses — so the
+  // one-ahead prefetch tracks the real next step even when a batch step is in
+  // play or cards have been deferred. Skips the virtual "batch" step (no
+  // summary/angles to warm) when resolving top + next.
+  useEffect(() => {
+    if (orderedQueue.length === 0) return;
+
+    // Resolve the sticky top's index over the SAME ordering the render uses.
+    let topIdx = 0;
+    if (stickyTopIdRef.current) {
+      const i = orderedQueue.findIndex(s => s.key === stickyTopIdRef.current);
+      if (i >= 0) topIdx = i;
+    }
+    const target = orderedQueue[topIdx]?.card;       // batch step has no .card
+    const next = orderedQueue[topIdx + 1]?.card;     // the single step to prefetch
+
+    // 1. Eager: the focused post. 2. Prefetch: exactly the next one.
+    // fetchSummaryFor is a no-op on undefined (batch step / end of queue).
+    fetchSummaryFor(target);
+    fetchSummaryFor(next);
+    // Prefetch the next LinkedIn-engagement card's comment brief too, so its
+    // angles are ready the instant it becomes focused. fetchCommentAngles is
+    // a no-op for non-LI cards and idempotent for already-cached ones.
+    if (next && next.task_type === "linkedin_engagement") {
+      fetchCommentAngles(next);
+    }
+  }, [orderedQueue, fetchSummaryFor, fetchCommentAngles]);
 
   // ─── Toast helper ───────────────────────────────────────────────
   function showToast(msg, ms = 2400, undo = null) {
@@ -1713,11 +1804,20 @@ Best,
       <main className="app">
         <header className="hdr">
           <div className="hdr-l">
-            <div className="avatar"><div className="dot" /></div>
+            {/* item 3 (Kunal Jun12): top-corner logo removed entirely. */}
             <div className="brand">
               <div className="brand-name">Side Kick</div>
               <div className="brand-sub">your Veloka pipeline sidekick</div>
             </div>
+          </div>
+          {/* item 5 (Kunal Jun12): 3-slot header row — brand left, queue
+              progress centered, action buttons right. */}
+          <div className="hdr-c">
+            <HeaderQueue
+              pending={count + (autoBatches.some(b => (b.leads || []).length > 0) ? 1 : 0)}
+              done={sessionDone}
+              loading={loading || !!fetchError}
+            />
           </div>
           <div className="hdr-r">
             <button
@@ -1729,7 +1829,13 @@ Best,
             </button>
             <button
               className="hdr-action"
-              onClick={() => handleGenerateBatch(true)}
+              onClick={() => {
+                // item 1 (Kunal Jun12): confirm before regenerating — a misclick
+                // wipes the existing batch. Native confirm (3-dependency rule).
+                if (typeof window !== "undefined" &&
+                    !window.confirm("Are you sure you want to reload it?")) return;
+                handleGenerateBatch(true);
+              }}
               disabled={batchGenerating}
               title="Regenerate today's LinkedIn batch (replaces existing)"
             >
@@ -1737,11 +1843,6 @@ Best,
                 ? <><span className="spinner spinner-sm" /><span className="hdr-action-label"> Generating…</span></>
                 : <>↻<span className="hdr-action-label"> Batch</span></>}
             </button>
-            <HeaderQueue
-              pending={count + (autoBatches.some(b => (b.leads || []).length > 0) ? 1 : 0)}
-              done={sessionDone}
-              loading={loading || !!fetchError}
-            />
           </div>
         </header>
 
@@ -1765,57 +1866,13 @@ Best,
             LinkedIn follow-ups are hidden for now (Unipile drives that
             state automatically); the outreach handlers stay wired. */}
         {!loading && !fetchError && (() => {
-          // 1. Task cards, priority-sorted (movements → top → comments → ga → other)
-          const allCards = [...cards];
-          const movements   = allCards.filter(c => c.task_type === "lead_movement");
-          const topLeads    = allCards.filter(c => c.task_type === "top_x");
-          const liComments  = allCards.filter(c => c.task_type === "linkedin_engagement");
-          const gaVisitors  = allCards.filter(c => c.task_type === "engagement");
-          const accountedFor = new Set([
-            ...movements.map(c => c.id),
-            ...topLeads.map(c => c.id),
-            ...liComments.map(c => c.id),
-            ...gaVisitors.map(c => c.id),
-          ]);
-          const other = allCards.filter(c => !accountedFor.has(c.id));
-          const byScore = (a, b) => (b.score || 0) - (a.score || 0);
-          const sortedStack = [
-            ...movements.sort(byScore),
-            ...topLeads.sort(byScore),
-            ...liComments.sort(byScore),
-            ...gaVisitors.sort(byScore),
-            ...other.sort(byScore),
-          ];
+          // Steps 1-4 (group+score sort, virtual batch step, deferred sinking)
+          // now live in the `orderedQueue` memo — the SINGLE source of truth the
+          // item-8 prefetch effect also consumes, so prefetch can't drift from
+          // what's rendered. Render just consumes it.
+          const ordered = orderedQueue;
 
-          // 2. Daily batch step — merge all pending_approval records into ONE
-          //    virtual batch (batch_id "all"; server treats it as a Status-only
-          //    filter). Dedup by record id, then by name+company.
-          let mergedBatch = null;
-          if (autoBatches.length) {
-            const allLeads = autoBatches.flatMap(b => b.leads || []);
-            const seenIds = new Set();
-            const seenNameCo = new Set();
-            const dedupedLeads = [];
-            for (const lead of allLeads) {
-              if (seenIds.has(lead.id)) continue;
-              const key = `${(lead.lead_name || "").toLowerCase().trim()}|${(lead.company || "").toLowerCase().trim()}`;
-              if (key !== "|" && seenNameCo.has(key)) continue;
-              seenIds.add(lead.id);
-              if (key !== "|") seenNameCo.add(key);
-              dedupedLeads.push(lead);
-            }
-            dedupedLeads.sort((a, b) => (b.composite_score || 0) - (a.composite_score || 0));
-            if (dedupedLeads.length > 0) {
-              mergedBatch = { batch_id: "all", leads: dedupedLeads, count: dedupedLeads.length };
-            }
-          }
-
-          // 3. The queue: batch first (the daily ritual), then tasks.
-          const steps = [];
-          if (mergedBatch) steps.push({ key: "batch", batch: mergedBatch });
-          for (const c of sortedStack) steps.push({ key: c.id, card: c });
-
-          if (steps.length === 0) {
+          if (ordered.length === 0) {
             topCardRef.current = null;
             return (
               <div className="task-stack">
@@ -1827,13 +1884,6 @@ Best,
               </div>
             );
           }
-
-          // 4. Deferred steps sink to the back, in the order they were deferred.
-          const deferredSet = new Set(deferred);
-          const ordered = [
-            ...steps.filter(s => !deferredSet.has(s.key)),
-            ...deferred.map(k => steps.find(s => s.key === k)).filter(Boolean),
-          ];
 
           // 5. Sticky focus — the same step stays visible until it's gone
           //    (actioned, deferred, or removed server-side).
@@ -2504,13 +2554,16 @@ function Card({ card, leaving, enriching, subject, meta, summary, onAction, onEn
 
   return (
     <div className={`card card-stack ${leaving ? "leaving" : "entering"}`}>
-      {/* Type chip + score on top — small, low-noise */}
+      {/* Type chip on top — small, low-noise.
+          item 7 (Kunal Jun12): numeric relevance score display removed.
+          Score data still arrives on `card.score` (used for sorting) — only
+          the on-card rendering is gone. */}
       <div className="card-header">
         <span className={`card-type card-type-${typeChip.tone}`}>
           <span className="card-type-icon">{typeChip.icon}</span>
           {typeChip.label}
         </span>
-        {typeof card.score === "number" && card.score > 0 && (
+        {false && typeof card.score === "number" && card.score > 0 && (
           <span className="card-score-wrap">
             <span className="card-score-chip" title={`Composite score ${card.score}`}>
               {card.score}
@@ -2930,7 +2983,8 @@ function LinkedInCommentCard({
           <span className="card-type-icon">{connector.icon}</span>
           {connector.label}
         </span>
-        {typeof card.score === "number" && card.score > 0 && (
+        {/* item 7 (Kunal Jun12): numeric relevance score display removed. */}
+        {false && typeof card.score === "number" && card.score > 0 && (
           <span className="card-score-chip" title={`Composite score ${card.score}`}>{card.score}</span>
         )}
       </div>
@@ -3474,8 +3528,9 @@ function BatchLeadCard({ lead, index, total, onSend, onSkip, onEdit, editingDraf
           {lead.company && <span className="batch-lead-company"> @ {lead.company}</span>}
         </div>
         <div className="batch-lead-score">
+          {/* item 7 (Kunal Jun12): numeric score display removed; the Movement
+              badge stays (it's a category flag, not a numeric score). */}
           {lead.composite_score >= 1000 && <span className="badge-movement">🔥 Movement</span>}
-          <span className="batch-score-val">Score {lead.composite_score}</span>
         </div>
       </div>
 
