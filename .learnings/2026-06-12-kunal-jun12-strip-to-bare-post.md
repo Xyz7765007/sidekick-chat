@@ -34,6 +34,14 @@ would drift + need a second Vercel deploy.
   auto-batch effect, so leaving loadHistory firing is safe.
 
 ## Status
-`npx next build` clean (exit 0). NOT deployed — holding for Samarth's approval.
-Card internals can't render locally (no SignalScope keys); visual QA must run
-against the live URL post-deploy.
+DEPLOYED to main → live. Build clean (exit 0). Live QA via Chromium against
+the deployed URL confirmed: no chat fab/panel, no Batch btn, no angles/comment
+block, no summary; card = post + "Comment on LinkedIn" CTA + Done/Skip.
+
+## QA catch (fixed same session)
+First deploy fell back to `card.signal` for legacy cards with no stored
+`post_text`, surfacing the internal brief (Suggested comment / Evidence / Why
+it matters) as if it were the post — breaks rule #6. Fixed: stripped card uses
+ONLY `rawPostText`; no post_text → clean "open it on LinkedIn" note + CTA. The
+signal fallback now lives only in summary mode. Most post-2026-06-11 cards have
+post_text and render the real post inline.
