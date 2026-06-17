@@ -2209,6 +2209,10 @@ body { position: relative; }
 .li-author-sep { color: var(--text-3); font-size: 12px; }
 .li-author-co { font-size: 13px; color: var(--text-2); }
 
+/* Post engagement counts (likes / comments) — Kunal Jun16 */
+.li-engagement { display: flex; gap: 14px; margin-top: 7px; }
+.li-eng-item { font-size: 12.5px; color: var(--text-2); display: inline-flex; align-items: center; gap: 4px; }
+
 /* ─── Kunal Jun16: skip-feedback prompt (replaces actions on Skip) ── */
 .skip-reason { width: 100%; display: flex; flex-direction: column; gap: 10px; }
 .skip-reason-q { font-size: 14px; font-weight: 600; color: var(--text); }

@@ -3062,6 +3062,22 @@ function LinkedInCommentCard({
         </div>
       ) : (meta && <div className="card-meta">{meta}</div>)}
 
+      {/* Kunal Jun16: post engagement (likes / comments). Shows the post's
+          traction at a glance so the exec can gauge relevance before reading
+          ("zero comments tells me something"). Only renders when the scan
+          captured a real number — a null (no data) hides the metric rather
+          than show a misleading 0. Populates on posts scanned from 2026-06-17. */}
+      {(typeof card.post_likes === "number" || typeof card.post_comments === "number") && (
+        <div className="li-engagement">
+          {typeof card.post_likes === "number" && (
+            <span className="li-eng-item" title={`${card.post_likes} reactions`}>👍 {fmtCount(card.post_likes)}</span>
+          )}
+          {typeof card.post_comments === "number" && (
+            <span className="li-eng-item" title={`${card.post_comments} comments`}>💬 {fmtCount(card.post_comments)}</span>
+          )}
+        </div>
+      )}
+
       {/* Post summary + bullets (public-facing, model-generated) */}
       <div className="li-post-block">
         {!showSummary && (
@@ -3370,6 +3386,14 @@ function QueueIndicator({ count, breakdown }) {
       </div>
     </div>
   );
+}
+
+// Compact engagement count: 0-999 as-is, 1.4k for thousands (Kunal Jun16).
+function fmtCount(n) {
+  if (typeof n !== "number" || !Number.isFinite(n)) return "";
+  if (n < 1000) return String(n);
+  const k = n / 1000;
+  return `${k >= 10 ? Math.round(k) : k.toFixed(1).replace(/\.0$/, "")}k`;
 }
 
 // ─── Author identity line (Kunal Jun16) ─────────────────────────
