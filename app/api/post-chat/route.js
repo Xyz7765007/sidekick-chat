@@ -19,8 +19,9 @@ export const fetchCache = "force-no-store";
 export const maxDuration = 20;
 
 const ANTHROPIC_API_KEY = process.env.ANTHROPIC_API_KEY;
-// Simplifying/explaining one short post is cheap + high-volume → Haiku.
-const POST_CHAT_MODEL = process.env.POST_CHAT_MODEL || "claude-haiku-4-5-20251001";
+// Sonnet 4.6 (Samarth Jun16): richer "who is this / why does this matter"
+// reasoning than Haiku for the per-post helper. Override via POST_CHAT_MODEL.
+const POST_CHAT_MODEL = process.env.POST_CHAT_MODEL || "claude-sonnet-4-6";
 
 const SYSTEM_PROMPT = `You help a busy senior executive quickly understand ONE specific LinkedIn post so they can decide whether to engage with it.
 
