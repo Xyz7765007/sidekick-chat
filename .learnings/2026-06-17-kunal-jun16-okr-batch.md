@@ -46,5 +46,12 @@ turns. Uses existing `ANTHROPIC_API_KEY` (already set for chat/summarize).
 - Build on desktop: `node node_modules/next/dist/bin/next build` (npx/.bin shim
   doesn't resolve under git-bash here). Build exit 0, 27 routes.
 
+## Follow-up (same day)
+6. **"N more queued" box removed** — Samarth flagged the `QueueIndicator`
+   ("18 queued") box below the card. Gated off with `{false && ...}` at the
+   render site (reversible). Header dot-counter still conveys progress, so the
+   card stays single-focus. Commit `85b3130`.
+
 ## Status
-Built clean. Deploying to main → Vercel.
+Built clean. Deployed to main → Vercel (cc99fa2 + 85b3130). Prod smoke-test of
+/api/post-chat green; homepage 200.
