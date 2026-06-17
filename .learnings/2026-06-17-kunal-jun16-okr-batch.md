@@ -55,6 +55,19 @@ turns. Uses existing `ANTHROPIC_API_KEY` (already set for chat/summarize).
    render site (reversible). Header dot-counter still conveys progress, so the
    card stays single-focus. Commit `85b3130`.
 
+## Follow-up 2 — post engagement counts (the deferred "investigate" item)
+7. **Likes/comments on the card** — Samarth approved building it. Turned out
+   NOT to need Unipile: the existing LinkedIn-posts scan (fresh-linkedin-scraper-api)
+   already returns counts in `post.activity.num_likes/num_comments`. Backend work
+   is in news-material (see its `.learnings/2026-06-17-post-engagement-counts.md`).
+   Frontend here: `li-engagement` line on the card (👍/💬), fed by feed
+   `post_likes`/`post_comments`, hidden when null (no false zero). `fmtCount`
+   formats thousands as `k`. Commit `562ba78`. Counts appear only on posts
+   scanned from 2026-06-17 onward.
+
+## Model note
+`/api/post-chat` default switched Haiku → **Sonnet 4.6** (Samarth, `e043590`).
+
 ## Status
-Built clean. Deployed to main → Vercel (cc99fa2 + 85b3130). Prod smoke-test of
-/api/post-chat green; homepage 200.
+Built clean. Deployed to main → Vercel (cc99fa2 + 85b3130 + e043590 + 562ba78).
+Prod smoke-test of /api/post-chat green; homepage 200.
