@@ -2851,6 +2851,31 @@ function LinkedInCommentCard({
   const fullPostText = rawPostText || stripInternalSignal(formatSignalText(card.signal));
   const hasFullPost = !!fullPostText;
 
+  // ─── Skip-feedback prompt (Kunal Jun16) ─────────────────────────
+  // Clicking Skip opens a tiny "why?" prompt instead of skipping straight
+  // away. One-tap reason chips (or a typed note) log to /api/feedback so
+  // the feed learns; then the skip fires. Best-effort — a failed log never
+  // blocks the skip. Swipe-to-skip (mobile) still skips directly.
+  const [skipping, setSkipping] = useState(false);
+  function submitSkip(reason) {
+    const r = (reason || "").trim();
+    if (r) {
+      fetch("/api/feedback", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          item_type: "skip_reason",
+          quoted_span: rawPostText.slice(0, 280),
+          feedback_text: r,
+          lead_name: card.lead_name || "",
+          lead_company: card.company || "",
+        }),
+      }).catch(() => {}); // never block the skip on a logging failure
+    }
+    setSkipping(false);
+    onAction(card.id, "skip");
+  }
+
   // Lazy-fetch angles when this card mounts (it only mounts when it's the
   // visible top card — the stack renders one card at a time).
   useEffect(() => {
@@ -3015,9 +3040,24 @@ function LinkedInCommentCard({
         )}
       </div>
 
-      {/* Title — author + company */}
+      {/* Title — author + context header */}
       <div className="card-name">{subject}</div>
-      {meta && <div className="card-meta">{meta}</div>}
+      {/* Kunal Jun16: a clear "who posted this" context header so the exec
+          has identity context BEFORE reading the post (his #1 ask — "this
+          doesn't give me enough context as to who he is"). Uses only public
+          lead fields (headline/title + company) — never the internal signal
+          (repo rule #6). Falls back to the generic meta line if neither is set. */}
+      {(card.lead_title || card.company) ? (
+        <div className="li-author">
+          {card.lead_title ? <span className="li-author-role">{card.lead_title}</span> : null}
+          {card.lead_title && card.company ? <span className="li-author-sep">·</span> : null}
+          {card.company ? (
+            <span className="li-author-co">
+              {card.movement_type === "Exited" ? `Ex-${card.company}` : card.company}
+            </span>
+          ) : null}
+        </div>
+      ) : (meta && <div className="card-meta">{meta}</div>)}
 
       {/* Post summary + bullets (public-facing, model-generated) */}
       <div className="li-post-block">
@@ -3108,6 +3148,14 @@ function LinkedInCommentCard({
           </FeedbackCapture>
         )}
       </div>
+
+      {/* Kunal Jun16: per-post context chatbot. Collapsed by default (one
+          quiet line) so it never competes with the focused card; expands to
+          a tiny inline chat scoped ONLY to this post — "simplify this for
+          me", "who is this". Backed by /api/post-chat. */}
+      {FEATURES.postContextChat && rawPostText && (
+        <PostChat post={rawPostText} author={postAuthorLine(card)} cardId={card.id} />
+      )}
 
       {/* Angle chips */}
       {showCommentAssist && status === "ready" && angles.length > 0 && (
@@ -3211,6 +3259,11 @@ function LinkedInCommentCard({
 
       {/* Actions: Comment-on-LinkedIn CTA (stripped) + Mark Done / Skip */}
       <div className="card-actions-row">
+        {/* Kunal Jun16: when skipping, swap the buttons for a tiny "why?"
+            prompt (keeps the card single-focus). Cancel returns to actions. */}
+        {skipping ? (
+          <SkipReason onConfirm={submitSkip} onCancel={() => setSkipping(false)} disabled={isDisabled} />
+        ) : (
         <div className="card-actions-primary">
           {/* Kunal Jun12 strip: the one CTA on the card — opens the post so the
               operator comments on LinkedIn directly. */}
@@ -3228,7 +3281,11 @@ function LinkedInCommentCard({
           <button className={`btn ${showCommentAssist ? "primary" : ""}`} disabled={isDisabled} onClick={() => onAction(card.id, "done")}>
             ✓ Mark Done
           </button>
-          <button className="btn danger" disabled={isDisabled} onClick={() => onAction(card.id, "skip")}>
+          <button
+            className="btn danger"
+            disabled={isDisabled}
+            onClick={() => (FEATURES.skipReason ? setSkipping(true) : onAction(card.id, "skip"))}
+          >
             Skip
           </button>
           {showCommentAssist && onNotNeeded && (
@@ -3243,6 +3300,7 @@ function LinkedInCommentCard({
             </button>
           )}
         </div>
+        )}
         {/* Focus-chat button only when chat is enabled. */}
         {FEATURES.chat && (
           <div className="card-actions-secondary">
@@ -3258,13 +3316,16 @@ function LinkedInCommentCard({
         )}
       </div>
 
-      {/* Keyboard hint — desktop only (hidden on touch via CSS) */}
-      <div className="card-kbd-hint" aria-hidden="true">
-        <span className="kb-key">↵</span> done · <span className="kb-key">S</span> skip · <span className="kb-key">U</span> undo
-        {showCommentAssist && status === "ready" && angles.length > 0 && (
-          <> · <span className="kb-key">1</span><span className="kb-key">2</span><span className="kb-key">3</span> angle</>
-        )}
-      </div>
+      {/* Keyboard hint box — REMOVED per Kunal Jun16 ("get rid of the box at
+          the bottom"). Gated off, not deleted: flip `false` to bring it back. */}
+      {false && (
+        <div className="card-kbd-hint" aria-hidden="true">
+          <span className="kb-key">↵</span> done · <span className="kb-key">S</span> skip · <span className="kb-key">U</span> undo
+          {showCommentAssist && status === "ready" && angles.length > 0 && (
+            <> · <span className="kb-key">1</span><span className="kb-key">2</span><span className="kb-key">3</span> angle</>
+          )}
+        </div>
+      )}
     </div>
   );
 }
@@ -3303,6 +3364,149 @@ function QueueIndicator({ count, breakdown }) {
             ))}
           </div>
         )}
+      </div>
+    </div>
+  );
+}
+
+// ─── Author identity line (Kunal Jun16) ─────────────────────────
+// Public-only "Name — Title — Company" string handed to the per-post
+// chatbot as author context. NEVER includes the internal signal/score.
+function postAuthorLine(card) {
+  return [
+    card.lead_name || null,
+    card.lead_title || null,
+    card.company ? (card.movement_type === "Exited" ? `Ex-${card.company}` : card.company) : null,
+  ].filter(Boolean).join(" — ");
+}
+
+// ═══════════════════════════════════════════════════════════════════
+// SKIP REASON PROMPT (Kunal Jun16)
+// Replaces the action buttons when the exec hits Skip. One-tap reason
+// chips fire the skip immediately; a typed note + Skip does the same.
+// "Keep it super simple" — no required field, Cancel backs out.
+// ═══════════════════════════════════════════════════════════════════
+const SKIP_REASONS = ["Not relevant", "Too complex", "Wrong audience", "Already engaged"];
+function SkipReason({ onConfirm, onCancel, disabled }) {
+  const [note, setNote] = useState("");
+  return (
+    <div className="skip-reason">
+      <div className="skip-reason-q">Why skip this? <span className="skip-reason-opt">(optional, tunes your feed)</span></div>
+      <div className="skip-reason-chips">
+        {SKIP_REASONS.map((r) => (
+          <button key={r} type="button" className="skip-chip" disabled={disabled} onClick={() => onConfirm(r)}>
+            {r}
+          </button>
+        ))}
+      </div>
+      <div className="skip-reason-row">
+        <input
+          type="text"
+          className="skip-reason-input"
+          placeholder="or type a reason…"
+          value={note}
+          disabled={disabled}
+          onChange={(e) => setNote(e.target.value)}
+          onKeyDown={(e) => { if (e.key === "Enter") onConfirm(note); }}
+          autoComplete="off"
+        />
+        <button type="button" className="btn danger" disabled={disabled} onClick={() => onConfirm(note)}>
+          Skip
+        </button>
+        <button type="button" className="btn quiet" disabled={disabled} onClick={onCancel}>
+          Cancel
+        </button>
+      </div>
+    </div>
+  );
+}
+
+// ═══════════════════════════════════════════════════════════════════
+// PER-POST CONTEXT CHATBOT (Kunal Jun16)
+// Collapsed to one quiet line by default (single-focus card stays clean).
+// Expands to a tiny inline chat scoped ONLY to this post — "simplify this
+// for me", "who is this", "why does this matter". Hits /api/post-chat,
+// which can ONLY discuss the post text it's handed (no leads, no tools).
+// ═══════════════════════════════════════════════════════════════════
+function PostChat({ post, author, cardId }) {
+  const [open, setOpen] = useState(false);
+  const [msgs, setMsgs] = useState([]); // { role:'user'|'assistant', text }
+  const [input, setInput] = useState("");
+  const [busy, setBusy] = useState(false);
+  const threadRef = useRef(null);
+
+  // Reset the thread whenever the focused card changes (component is reused
+  // across cards by the single-card stack).
+  useEffect(() => { setOpen(false); setMsgs([]); setInput(""); setBusy(false); }, [cardId]);
+
+  useEffect(() => {
+    if (threadRef.current) threadRef.current.scrollTop = threadRef.current.scrollHeight;
+  }, [msgs, busy]);
+
+  async function send(q) {
+    const text = (q || "").trim();
+    if (!text || busy) return;
+    const history = msgs.slice(-6);
+    setMsgs((m) => [...m, { role: "user", text }]);
+    setInput("");
+    setBusy(true);
+    try {
+      const r = await fetch("/api/post-chat", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ message: text, post, author, history }),
+      });
+      const data = await r.json();
+      setMsgs((m) => [...m, { role: "assistant", text: data?.ok ? data.reply : (data?.error || "Couldn't answer that.") }]);
+    } catch (e) {
+      setMsgs((m) => [...m, { role: "assistant", text: "Network error — try again." }]);
+    } finally {
+      setBusy(false);
+    }
+  }
+
+  if (!open) {
+    return (
+      <button type="button" className="postchat-open" onClick={() => setOpen(true)}>
+        💬 Ask about this post
+      </button>
+    );
+  }
+
+  return (
+    <div className="postchat">
+      <div className="postchat-hdr">
+        <span className="postchat-title">Ask about this post</span>
+        <button type="button" className="postchat-close" onClick={() => setOpen(false)} aria-label="Close">✕</button>
+      </div>
+      {msgs.length === 0 && (
+        <div className="postchat-suggest">
+          <button type="button" className="postchat-chip" disabled={busy} onClick={() => send("Simplify this for me.")}>Simplify this</button>
+          <button type="button" className="postchat-chip" disabled={busy} onClick={() => send("Who is this person and why does this post matter?")}>Who is this?</button>
+        </div>
+      )}
+      {msgs.length > 0 && (
+        <div className="postchat-thread" ref={threadRef}>
+          {msgs.map((m, i) => (
+            <div key={i} className={`postchat-msg postchat-msg-${m.role}`}>{m.text}</div>
+          ))}
+          {busy && <div className="postchat-msg postchat-msg-assistant postchat-typing"><span className="spinner spinner-sm" /> Thinking…</div>}
+        </div>
+      )}
+      <div className="postchat-inputwrap">
+        <input
+          type="text"
+          className="postchat-input"
+          placeholder="Ask anything about this post…"
+          value={input}
+          disabled={busy}
+          onChange={(e) => setInput(e.target.value)}
+          onKeyDown={(e) => { if (e.key === "Enter") send(input); }}
+          autoComplete="off"
+        />
+        <button type="button" className="postchat-send" disabled={busy || !input.trim()} onClick={() => send(input)} aria-label="Send">
+          {busy ? <span className="spinner spinner-sm" /> : "→"}
+        </button>
       </div>
     </div>
   );

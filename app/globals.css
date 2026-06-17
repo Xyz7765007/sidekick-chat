@@ -2191,3 +2191,120 @@ body { position: relative; }
   .card-actions-primary .btn { flex: 1; justify-content: center; }
   .card-actions-row { gap: 10px; }
 }
+
+/* ─── Kunal Jun16: author-context header on the LinkedIn card ──────── */
+.li-author {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: baseline;
+  gap: 6px;
+  margin-top: 4px;
+}
+.li-author-role {
+  font-size: 13.5px;
+  font-weight: 600;
+  color: var(--text);
+  line-height: 1.4;
+}
+.li-author-sep { color: var(--text-3); font-size: 12px; }
+.li-author-co { font-size: 13px; color: var(--text-2); }
+
+/* ─── Kunal Jun16: skip-feedback prompt (replaces actions on Skip) ── */
+.skip-reason { width: 100%; display: flex; flex-direction: column; gap: 10px; }
+.skip-reason-q { font-size: 14px; font-weight: 600; color: var(--text); }
+.skip-reason-opt { font-weight: 400; color: var(--text-3); font-size: 12px; }
+.skip-reason-chips { display: flex; flex-wrap: wrap; gap: 8px; }
+.skip-chip {
+  font-size: 13px;
+  padding: 7px 12px;
+  border: 1px solid var(--border);
+  border-radius: 999px;
+  background: var(--surface);
+  color: var(--text);
+  cursor: pointer;
+  transition: background 0.15s, border-color 0.15s;
+}
+.skip-chip:hover:not(:disabled) { background: var(--accent-bg); border-color: var(--accent); }
+.skip-chip:disabled { opacity: 0.45; cursor: not-allowed; }
+.skip-reason-row { display: flex; gap: 8px; align-items: center; }
+.skip-reason-input {
+  flex: 1;
+  min-width: 0;
+  font-size: 14px;
+  padding: 9px 12px;
+  border: 1px solid var(--border);
+  border-radius: var(--r-sm);
+  background: var(--surface);
+  color: var(--text);
+  outline: none;
+}
+.skip-reason-input:focus { border-color: var(--accent); }
+
+/* ─── Kunal Jun16: per-post context chatbot ───────────────────────── */
+.postchat-open {
+  margin-top: 12px;
+  font-size: 13px;
+  color: var(--text-2);
+  background: transparent;
+  border: 1px dashed var(--border);
+  border-radius: var(--r-sm);
+  padding: 8px 12px;
+  cursor: pointer;
+  width: 100%;
+  text-align: left;
+  transition: background 0.15s, border-color 0.15s, color 0.15s;
+}
+.postchat-open:hover { background: var(--accent-bg); border-color: var(--accent); color: var(--accent-dark); }
+.postchat {
+  margin-top: 12px;
+  border: 1px solid var(--border);
+  border-radius: var(--r-sm);
+  background: var(--bg-warm);
+  padding: 10px 12px;
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+}
+.postchat-hdr { display: flex; align-items: center; justify-content: space-between; }
+.postchat-title { font-size: 12.5px; font-weight: 600; color: var(--text-2); }
+.postchat-close {
+  background: transparent; border: none; cursor: pointer;
+  color: var(--text-3); font-size: 14px; line-height: 1; padding: 2px 4px;
+}
+.postchat-close:hover { color: var(--text); }
+.postchat-suggest { display: flex; flex-wrap: wrap; gap: 8px; }
+.postchat-chip {
+  font-size: 13px; padding: 6px 11px;
+  border: 1px solid var(--border); border-radius: 999px;
+  background: var(--surface); color: var(--text); cursor: pointer;
+  transition: background 0.15s, border-color 0.15s;
+}
+.postchat-chip:hover:not(:disabled) { background: var(--accent-bg); border-color: var(--accent); }
+.postchat-chip:disabled { opacity: 0.45; cursor: not-allowed; }
+.postchat-thread {
+  display: flex; flex-direction: column; gap: 8px;
+  max-height: 260px; overflow-y: auto;
+}
+.postchat-msg {
+  font-size: 13.5px; line-height: 1.5;
+  padding: 8px 11px; border-radius: var(--r-sm);
+  white-space: pre-wrap; word-break: break-word;
+}
+.postchat-msg-user { background: var(--accent-bg); color: var(--text); align-self: flex-end; max-width: 85%; }
+.postchat-msg-assistant { background: var(--surface); border: 1px solid var(--border); color: var(--text); align-self: flex-start; max-width: 92%; }
+.postchat-typing { display: inline-flex; align-items: center; gap: 7px; color: var(--text-3); }
+.postchat-inputwrap { display: flex; gap: 8px; align-items: center; }
+.postchat-input {
+  flex: 1; min-width: 0; font-size: 14px;
+  padding: 9px 12px; border: 1px solid var(--border);
+  border-radius: var(--r-sm); background: var(--surface); color: var(--text); outline: none;
+}
+.postchat-input:focus { border-color: var(--accent); }
+.postchat-send {
+  flex: 0 0 auto; width: 38px; height: 38px;
+  border: none; border-radius: var(--r-sm);
+  background: var(--accent); color: #fff; font-size: 16px;
+  cursor: pointer; display: inline-flex; align-items: center; justify-content: center;
+}
+.postchat-send:disabled { opacity: 0.45; cursor: not-allowed; }
+.postchat-send .spinner-sm { border-color: rgba(255,255,255,0.35); border-top-color: #fff; }
