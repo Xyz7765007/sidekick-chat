@@ -25,7 +25,10 @@ said "do all changes" + explicitly added "remove the box at the bottom too".
    `FEATURES.postContextChat` (true).
 
 ## New route — /api/post-chat
-Mirrors `/api/summarize` (Anthropic via fetch, Haiku, maxDuration 20). System
+Mirrors `/api/summarize` (Anthropic via fetch, maxDuration 20). Model = Sonnet
+4.6 (`claude-sonnet-4-6`, Samarth's call Jun16 for richer "who is this / why
+matters" reasoning; started on Haiku, switched same day). Override via
+`POST_CHAT_MODEL`. System
 prompt pins the post text + author identity and forbids discussing anything
 else — no leads, no tools, no SignalScope. Body `{ message, post, author,
 history }`, returns `{ ok, reply }`. Post capped at 6000 chars, history at 6
