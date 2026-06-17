@@ -1995,7 +1995,10 @@ Best,
                   )}
                 </SwipeCard>
               )}
-              {remaining.length > 0 && <QueueIndicator count={remaining.length} breakdown={breakdown} />}
+              {/* "N more queued" box REMOVED per Kunal Jun16 — keep the card
+                  single-focus. Gated off, not deleted: flip `false` to restore.
+                  The header dot-counter still shows progress. */}
+              {false && remaining.length > 0 && <QueueIndicator count={remaining.length} breakdown={breakdown} />}
             </div>
           );
         })()}
