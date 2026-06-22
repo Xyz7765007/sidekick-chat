@@ -609,11 +609,17 @@ function handledAgo(iso) {
 function getConnector(card) {
   if (!card) return { icon: "•", label: "Task", tone: "default" };
   const byType = {
-    linkedin_engagement:        { icon: "🔗", label: "LinkedIn Posts",       tone: "li" },
-    lead_movement:              { icon: "🔁", label: "Movement",             tone: "movement" },
-    top_x:                      { icon: "⭐", label: "Top Leads",            tone: "top" },
-    engagement:                 { icon: "🌐", label: "Site Visits",          tone: "ga" },
-    unipile_connection_accepted:{ icon: "🤝", label: "Connection accepted",  tone: "movement" },
+    linkedin_engagement:          { icon: "🔗", label: "LinkedIn Posts",        tone: "li" },
+    lead_movement:                { icon: "🔁", label: "Movement",              tone: "movement" },
+    top_x:                        { icon: "⭐", label: "Top Leads",             tone: "top" },
+    engagement:                   { icon: "🌐", label: "Site Visits",           tone: "ga" },
+    // Unipile DM / outreach-sequence signals (created by /api/unipile-triggers).
+    unipile_message_reply:        { icon: "📬", label: "DM reply",              tone: "movement" },
+    unipile_connection_accepted:  { icon: "🤝", label: "Connection accepted",   tone: "movement" },
+    unipile_post_comment_on_yours:{ icon: "💬", label: "Commented on your post", tone: "li" },
+    unipile_post_reaction_on_yours:{ icon: "👍", label: "Reacted to your post",  tone: "li" },
+    unipile_message_reaction:     { icon: "😊", label: "Reacted to your DM",     tone: "movement" },
+    unipile_profile_view:         { icon: "👀", label: "Viewed your profile",    tone: "ga" },
   };
   if (byType[card.task_type]) return byType[card.task_type];
   // Fallback: infer from source / task_rule text for less-common connectors.
@@ -977,7 +983,10 @@ export default function SideKick() {
       // Pull the real total from /api/count in parallel, SCOPED to the same task
       // type the queue renders (LinkedIn posts only when otherCards is off) so the
       // "N left" badge matches what the operator actually sees in the queue.
-      const countQS = FEATURES.otherCards ? "" : "?taskType=linkedin_engagement,unipile_connection_accepted";
+      // Badge counts what the stripped queue shows: LinkedIn-post tasks + ALL
+      // Unipile outreach-sequence signals. "unipile_" is a substring match on the
+      // backend (FIND), so it covers every unipile_* type in one clause.
+      const countQS = FEATURES.otherCards ? "" : "?taskType=linkedin_engagement,unipile_";
       const [r, rc] = await Promise.all([
         fetch(`/api/feed?limit=${FEED_LIMIT}`, { cache: "no-store" }),
         fetch(`/api/count${countQS}`, { cache: "no-store" }).catch(() => null),
@@ -1205,9 +1214,9 @@ export default function SideKick() {
     // which fetches its own post brief via /api/comment-angles. Don't also
     // spend on an SDR summary it never displays.
     if (target.task_type === "linkedin_engagement") return;
-    // Connection-accepted cards render the raw signal (with the connection date),
-    // not an AI summary — don't spend a summarize call on them.
-    if (target.task_type === "unipile_connection_accepted") return;
+    // Unipile signal cards (DM reply, connection accepted, reactions, profile
+    // view, etc.) render their raw signal — don't spend a summarize call on them.
+    if ((target.task_type || "").startsWith("unipile_")) return;
     // Already cached / loading / in-flight? Skip.
     if (summaries[target.id]) return;
     if (pendingSummariesRef.current.has(target.id)) return;
@@ -1320,17 +1329,19 @@ export default function SideKick() {
     const topLeads    = allCards.filter(c => c.task_type === "top_x");
     const liComments  = allCards.filter(c => c.task_type === "linkedin_engagement");
     const gaVisitors  = allCards.filter(c => c.task_type === "engagement");
-    // Connection-accepted (Unipile warm-intro) tasks: the lead accepted the
-    // invite, so a DM window is open. Kunal 2026-06-19: "those become priority
-    // tasks" — surfaced even in the stripped (otherCards off) queue, ranked
-    // FIRST since the window is time-sensitive.
-    const connAccepted = allCards.filter(c => c.task_type === "unipile_connection_accepted");
+    // Unipile DM / outreach-sequence signals (created by /api/unipile-triggers):
+    // DM reply, connection accepted, DM reaction, post comment/reaction, profile
+    // view. These are the outreach-sequence flow — a lead replied / accepted /
+    // engaged. Kunal 2026-06-19: "those become priority tasks." Surfaced even in
+    // the stripped (otherCards off) queue, ranked FIRST (time-sensitive), and by
+    // score within (DM reply 95 > comment 80 > connection accepted 70 > …).
+    const unipileSignals = allCards.filter(c => (c.task_type || "").startsWith("unipile_"));
     const accountedFor = new Set([
       ...movements.map(c => c.id),
       ...topLeads.map(c => c.id),
       ...liComments.map(c => c.id),
       ...gaVisitors.map(c => c.id),
-      ...connAccepted.map(c => c.id),
+      ...unipileSignals.map(c => c.id),
     ]);
     const other = allCards.filter(c => !accountedFor.has(c.id));
     const byScore = (a, b) => (b.score || 0) - (a.score || 0);
@@ -1348,16 +1359,17 @@ export default function SideKick() {
     // LinkedIn-post cards — movement / top-leads / GA cards are hidden.
     const sortedStack = FEATURES.otherCards
       ? [
-          ...connAccepted.sort(byPriority),
+          ...unipileSignals.sort(byPriority),
           ...movements.sort(byScore),
           ...topLeads.sort(byScore),
           ...liComments.sort(byPriority),
           ...gaVisitors.sort(byScore),
           ...other.sort(byScore),
         ]
-      // Stripped queue (otherCards off): warm-intro connection-accepted tasks
-      // first (time-sensitive priority), then LinkedIn-post tasks.
-      : [...connAccepted.sort(byPriority), ...liComments.sort(byPriority)];
+      // Stripped queue (otherCards off): Unipile outreach-sequence signals first
+      // (DM reply / connection accepted / engagement — time-sensitive, score-led),
+      // then LinkedIn-post tasks.
+      : [...unipileSignals.sort(byPriority), ...liComments.sort(byPriority)];
 
     // 2. Daily batch step — merge all pending_approval records into ONE virtual
     //    batch. Dedup by record id, then by name+company.
@@ -2628,10 +2640,12 @@ function Card({ card, leaving, enriching, subject, meta, summary, onAction, onEn
   // Has either summary or raw signal to show?
   const hasSignal = !!card.signal;
   const summaryIsReady = summary && summary !== "loading" && summary !== "error";
-  // Connection-accepted (warm-intro) tasks: show the raw signal by default — it
-  // carries the connection DATE + "warm intro window" note the operator needs
-  // (answers the "when did I connect with this person" ask). No AI summary.
-  const isConnAccepted = card.task_type === "unipile_connection_accepted";
+  // Unipile DM / outreach-sequence signals (connection accepted, DM reply, DM
+  // reaction, post comment/reaction, profile view): show the raw signal by
+  // default — it carries the event detail the operator needs (the reply text,
+  // the connection date, etc.). No AI summary — these are event notifications,
+  // not posts to summarize.
+  const isUnipileSignal = (card.task_type || "").startsWith("unipile_");
 
   // Relevance affordances — the real company is the stored `company` even on an
   // Exited card (the meta DISPLAYS it as "Ex-…", but the suppress rule must use
@@ -2744,12 +2758,12 @@ function Card({ card, leaving, enriching, subject, meta, summary, onAction, onEn
               />
             </div>
           )}
-          {!isConnAccepted && !showFullData && summary === "loading" && (
+          {!isUnipileSignal && !showFullData && summary === "loading" && (
             <div className="card-summary card-summary-loading">
               <span className="spinner spinner-sm" /> Generating SDR summary…
             </div>
           )}
-          {!isConnAccepted && !showFullData && summaryIsReady && (
+          {!isUnipileSignal && !showFullData && summaryIsReady && (
             <FeedbackCapture
               itemType="comment"
               leadName={card.lead_name}
@@ -2760,7 +2774,7 @@ function Card({ card, leaving, enriching, subject, meta, summary, onAction, onEn
               <div className="li-post-fbhint" aria-hidden="true">💬 highlight to give feedback</div>
             </FeedbackCapture>
           )}
-          {(isConnAccepted || showFullData || summary === "error") && (
+          {(isUnipileSignal || showFullData || summary === "error") && (
             <div className="card-signal-text">
               <ExpandableSignal text={formatSignalText(card.signal)} threshold={8} />
             </div>
@@ -2769,7 +2783,7 @@ function Card({ card, leaving, enriching, subject, meta, summary, onAction, onEn
               When summary is "error", the full data is already showing, so the
               toggle button just lets the operator collapse it back if they want.
               Connection-accepted always shows raw signal, so no toggle. */}
-          {!isConnAccepted && (summaryIsReady || summary === "error") && (
+          {!isUnipileSignal && (summaryIsReady || summary === "error") && (
             <button
               className="card-view-more-btn"
               onClick={(e) => { e.stopPropagation(); setShowFullData(v => !v); }}
