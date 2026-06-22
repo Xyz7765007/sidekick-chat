@@ -679,6 +679,35 @@ function ExpandableSignal({ text, threshold = 8 }) {
   );
 }
 
+// ─────────────────────────────────────────────────────────────────────
+// Task prioritization (Kunal 2026-06-19) — a fresh post should outrank a
+// stale one, but seniority/ICP fit (the score) still leads. So priority =
+// score + a freshness boost that decays with the post's age. This brings
+// today's posts up without letting a low-fit fresh post leapfrog a strong
+// senior lead. Uses the post's publish date when known, else the task's
+// created date. Pure function of the card — no side effects.
+// ─────────────────────────────────────────────────────────────────────
+function postAgeDays(card) {
+  const d = card?.post_date || card?.created_at;
+  if (!d) return null;
+  const t = new Date(d).getTime();
+  if (isNaN(t)) return null;
+  return Math.max(0, (Date.now() - t) / 86400000);
+}
+function freshnessBoost(card) {
+  const age = postAgeDays(card);
+  if (age === null) return 0;       // unknown age → no boost (don't guess)
+  if (age <= 1) return 15;
+  if (age <= 2) return 11;
+  if (age <= 3) return 7;
+  if (age <= 4) return 4;
+  if (age <= 5) return 2;
+  return 0;                         // 6-7 days: about to age out, no boost
+}
+function taskPriority(card) {
+  return (card?.score || 0) + freshnessBoost(card);
+}
+
 export default function SideKick() {
   const [cards, setCards] = useState([]);
   const [count, setCount] = useState(0);
@@ -941,11 +970,26 @@ export default function SideKick() {
   // ─── Fetch feed ─────────────────────────────────────────────────
   const fetchFeed = useCallback(async () => {
     try {
-      const r = await fetch(`/api/feed?limit=${FEED_LIMIT}`, { cache: "no-store" });
+      // Cards come from /api/feed (capped at FEED_LIMIT for render). The header
+      // counter must reflect the TRUE pending total, not the page size — /api/feed
+      // returns count = cards.length (≤ limit), so the badge would stick at ~20.
+      // Pull the real total from /api/count in parallel, SCOPED to the same task
+      // type the queue renders (LinkedIn posts only when otherCards is off) so the
+      // "N left" badge matches what the operator actually sees in the queue.
+      const countQS = FEATURES.otherCards ? "" : "?taskType=linkedin_engagement";
+      const [r, rc] = await Promise.all([
+        fetch(`/api/feed?limit=${FEED_LIMIT}`, { cache: "no-store" }),
+        fetch(`/api/count${countQS}`, { cache: "no-store" }).catch(() => null),
+      ]);
       const data = await r.json();
       if (data.ok) {
         setCards(data.cards || []);
-        const n = typeof data.count === "number" ? data.count : (data.cards || []).length;
+        // Prefer the true total from /api/count; fall back to the feed page size.
+        let n = typeof data.count === "number" ? data.count : (data.cards || []).length;
+        if (rc && rc.ok) {
+          const cd = await rc.json().catch(() => null);
+          if (cd && cd.ok && typeof cd.count === "number") n = cd.count;
+        }
         setCount(n);
         countRef.current = n;
         setFetchError(null);
@@ -1075,7 +1119,8 @@ export default function SideKick() {
 
   // ─── Keyboard shortcuts for the focused top card (item A) ───────
   // Desktop ergonomics — act on the single visible card without reaching
-  // for the mouse: Enter / D = Done, S = Skip. The 1/2/3 angle pick for a
+  // for the mouse: D = Done, S = Skip. (Enter is deliberately NOT bound —
+  // see Kunal 2026-06-19; it was marking tasks done unexpectedly.) The 1/2/3 angle pick for a
   // LinkedIn card is handled INSIDE LinkedInCommentCard's own effect (it's
   // the focused card when mounted) so it can reach its angle-select state.
   //
@@ -1111,7 +1156,11 @@ export default function SideKick() {
       // (prevents double-fire on rapid keypress / key-repeat).
       if (leavingRef.current && leavingRef.current.has(top.id)) return;
       const k = e.key;
-      if (k === "Enter" || k === "d" || k === "D") {
+      // Enter is intentionally NOT a Done shortcut (Kunal, 2026-06-19: "the enter
+      // key should not work… just click the button"). Enter kept marking the task
+      // done — including right after a post-chat send blurred the chat input — so
+      // it's removed entirely. Done is D / swipe / button; Skip is S.
+      if (k === "d" || k === "D") {
         e.preventDefault();
         handleAction(top.id, "done");
       } else if (k === "s" || k === "S") {
@@ -1275,17 +1324,27 @@ export default function SideKick() {
     ]);
     const other = allCards.filter(c => !accountedFor.has(c.id));
     const byScore = (a, b) => (b.score || 0) - (a.score || 0);
+    // LinkedIn tasks rank by freshness-weighted priority (Kunal 2026-06-19):
+    // score leads, but a fresher post gets a decaying boost so today's posts
+    // surface ahead of week-old ones. Tiebreak on raw score, then on recency.
+    const byPriority = (a, b) => {
+      const d = taskPriority(b) - taskPriority(a);
+      if (d !== 0) return d;
+      const ds = (b.score || 0) - (a.score || 0);
+      if (ds !== 0) return ds;
+      return (postAgeDays(a) ?? 1e9) - (postAgeDays(b) ?? 1e9); // newer first
+    };
     // Kunal Jun12 strip: when otherCards is off, the queue shows ONLY
     // LinkedIn-post cards — movement / top-leads / GA cards are hidden.
     const sortedStack = FEATURES.otherCards
       ? [
           ...movements.sort(byScore),
           ...topLeads.sort(byScore),
-          ...liComments.sort(byScore),
+          ...liComments.sort(byPriority),
           ...gaVisitors.sort(byScore),
           ...other.sort(byScore),
         ]
-      : liComments.sort(byScore);
+      : liComments.sort(byPriority);
 
     // 2. Daily batch step — merge all pending_approval records into ONE virtual
     //    batch. Dedup by record id, then by name+company.
@@ -2067,7 +2126,7 @@ Best,
                 type="text"
                 value={input}
                 onChange={(e) => setInput(e.target.value)}
-                onKeyDown={(e) => { if (e.key === "Enter") handleSubmit(e); }}
+                onKeyDown={(e) => { if (e.key === "Enter") { e.preventDefault(); e.stopPropagation(); handleSubmit(e); } }}
                 placeholder={chatBusy ? "Thinking…" : focusLead ? `Ask about ${focusLead.lead_name || "this lead"}…` : "Talk to Side Kick…"}
                 disabled={chatBusy}
                 className="chat-input"
@@ -3173,7 +3232,7 @@ function LinkedInCommentCard({
           a tiny inline chat scoped ONLY to this post — "simplify this for
           me", "who is this". Backed by /api/post-chat. */}
       {FEATURES.postContextChat && rawPostText && (
-        <PostChat post={rawPostText} author={postAuthorLine(card)} cardId={card.id} />
+        <PostChat post={rawPostText} author={postAuthorLine(card)} cardId={card.id} leadName={card.lead_name} leadCompany={card.company} />
       )}
 
       {/* Angle chips */}
@@ -3455,7 +3514,7 @@ function SkipReason({ onConfirm, onCancel, disabled }) {
 // for me", "who is this", "why does this matter". Hits /api/post-chat,
 // which can ONLY discuss the post text it's handed (no leads, no tools).
 // ═══════════════════════════════════════════════════════════════════
-function PostChat({ post, author, cardId }) {
+function PostChat({ post, author, cardId, leadName, leadCompany }) {
   const [open, setOpen] = useState(false);
   const [msgs, setMsgs] = useState([]); // { role:'user'|'assistant', text }
   const [input, setInput] = useState("");
@@ -3469,6 +3528,31 @@ function PostChat({ post, author, cardId }) {
   useEffect(() => {
     if (threadRef.current) threadRef.current.scrollTop = threadRef.current.scrollHeight;
   }, [msgs, busy]);
+
+  // Smart feedback capture: when the bot decides the operator's message was
+  // FEEDBACK about this task/feed (not a question), persist it durably as
+  // item_type "task_feedback" so it's not lost. Best-effort; on success show a
+  // quiet confirmation bubble. NOTE: this captures feedback — it does not auto-
+  // suppress the feed (no silent task-nuking from a single read).
+  async function captureFeedback(feedbackText) {
+    try {
+      const r = await fetch("/api/feedback", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          item_type: "task_feedback",
+          feedback_text: feedbackText,
+          quoted_span: (post || "").slice(0, 280),
+          lead_name: leadName || "",
+          lead_company: leadCompany || "",
+        }),
+      });
+      const d = await r.json().catch(() => ({}));
+      if (d?.ok) {
+        setMsgs((m) => [...m, { role: "assistant", text: "✓ Noted as feedback — it'll help tune your tasks." }]);
+      }
+    } catch { /* best-effort: capture failure shouldn't break the chat */ }
+  }
 
   async function send(q) {
     const text = (q || "").trim();
@@ -3485,6 +3569,8 @@ function PostChat({ post, author, cardId }) {
       });
       const data = await r.json();
       setMsgs((m) => [...m, { role: "assistant", text: data?.ok ? data.reply : (data?.error || "Couldn't answer that.") }]);
+      // If the bot flagged this turn as feedback, durably capture it.
+      if (data?.ok && data.feedback?.text) captureFeedback(data.feedback.text);
     } catch (e) {
       setMsgs((m) => [...m, { role: "assistant", text: "Network error — try again." }]);
     } finally {
@@ -3495,7 +3581,7 @@ function PostChat({ post, author, cardId }) {
   if (!open) {
     return (
       <button type="button" className="postchat-open" onClick={() => setOpen(true)}>
-        💬 Ask about this post
+        💬 Ask about this task
       </button>
     );
   }
@@ -3503,13 +3589,14 @@ function PostChat({ post, author, cardId }) {
   return (
     <div className="postchat">
       <div className="postchat-hdr">
-        <span className="postchat-title">Ask about this post</span>
+        <span className="postchat-title">Ask about this task</span>
         <button type="button" className="postchat-close" onClick={() => setOpen(false)} aria-label="Close">✕</button>
       </div>
       {msgs.length === 0 && (
         <div className="postchat-suggest">
           <button type="button" className="postchat-chip" disabled={busy} onClick={() => send("Simplify this for me.")}>Simplify this</button>
-          <button type="button" className="postchat-chip" disabled={busy} onClick={() => send("Who is this person and why does this post matter?")}>Who is this?</button>
+          <button type="button" className="postchat-chip" disabled={busy} onClick={() => send("Is this a good fit for our GTM, and what's the smartest way to engage?")}>Good fit + how to engage?</button>
+          <button type="button" className="postchat-chip" disabled={busy} onClick={() => send("Draft a short, human comment I can leave on this post.")}>Draft a comment</button>
         </div>
       )}
       {msgs.length > 0 && (
@@ -3524,11 +3611,20 @@ function PostChat({ post, author, cardId }) {
         <input
           type="text"
           className="postchat-input"
-          placeholder="Ask anything about this post…"
+          placeholder="Ask anything about this task…"
           value={input}
           disabled={busy}
           onChange={(e) => setInput(e.target.value)}
-          onKeyDown={(e) => { if (e.key === "Enter") send(input); }}
+          onKeyDown={(e) => {
+            if (e.key === "Enter") {
+              // Enter here ONLY sends the chat message. Stop it from bubbling to
+              // the window-level card shortcut handler (which could otherwise act
+              // on the focused task — e.g. if the input blurs on send).
+              e.preventDefault();
+              e.stopPropagation();
+              send(input);
+            }
+          }}
           autoComplete="off"
         />
         <button type="button" className="postchat-send" disabled={busy || !input.trim()} onClick={() => send(input)} aria-label="Send">
