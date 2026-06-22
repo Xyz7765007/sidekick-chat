@@ -609,10 +609,11 @@ function handledAgo(iso) {
 function getConnector(card) {
   if (!card) return { icon: "•", label: "Task", tone: "default" };
   const byType = {
-    linkedin_engagement: { icon: "🔗", label: "LinkedIn Posts", tone: "li" },
-    lead_movement:       { icon: "🔁", label: "Movement",      tone: "movement" },
-    top_x:               { icon: "⭐", label: "Top Leads",      tone: "top" },
-    engagement:          { icon: "🌐", label: "Site Visits",   tone: "ga" },
+    linkedin_engagement:        { icon: "🔗", label: "LinkedIn Posts",       tone: "li" },
+    lead_movement:              { icon: "🔁", label: "Movement",             tone: "movement" },
+    top_x:                      { icon: "⭐", label: "Top Leads",            tone: "top" },
+    engagement:                 { icon: "🌐", label: "Site Visits",          tone: "ga" },
+    unipile_connection_accepted:{ icon: "🤝", label: "Connection accepted",  tone: "movement" },
   };
   if (byType[card.task_type]) return byType[card.task_type];
   // Fallback: infer from source / task_rule text for less-common connectors.
@@ -976,7 +977,7 @@ export default function SideKick() {
       // Pull the real total from /api/count in parallel, SCOPED to the same task
       // type the queue renders (LinkedIn posts only when otherCards is off) so the
       // "N left" badge matches what the operator actually sees in the queue.
-      const countQS = FEATURES.otherCards ? "" : "?taskType=linkedin_engagement";
+      const countQS = FEATURES.otherCards ? "" : "?taskType=linkedin_engagement,unipile_connection_accepted";
       const [r, rc] = await Promise.all([
         fetch(`/api/feed?limit=${FEED_LIMIT}`, { cache: "no-store" }),
         fetch(`/api/count${countQS}`, { cache: "no-store" }).catch(() => null),
@@ -1204,6 +1205,9 @@ export default function SideKick() {
     // which fetches its own post brief via /api/comment-angles. Don't also
     // spend on an SDR summary it never displays.
     if (target.task_type === "linkedin_engagement") return;
+    // Connection-accepted cards render the raw signal (with the connection date),
+    // not an AI summary — don't spend a summarize call on them.
+    if (target.task_type === "unipile_connection_accepted") return;
     // Already cached / loading / in-flight? Skip.
     if (summaries[target.id]) return;
     if (pendingSummariesRef.current.has(target.id)) return;
@@ -1316,11 +1320,17 @@ export default function SideKick() {
     const topLeads    = allCards.filter(c => c.task_type === "top_x");
     const liComments  = allCards.filter(c => c.task_type === "linkedin_engagement");
     const gaVisitors  = allCards.filter(c => c.task_type === "engagement");
+    // Connection-accepted (Unipile warm-intro) tasks: the lead accepted the
+    // invite, so a DM window is open. Kunal 2026-06-19: "those become priority
+    // tasks" — surfaced even in the stripped (otherCards off) queue, ranked
+    // FIRST since the window is time-sensitive.
+    const connAccepted = allCards.filter(c => c.task_type === "unipile_connection_accepted");
     const accountedFor = new Set([
       ...movements.map(c => c.id),
       ...topLeads.map(c => c.id),
       ...liComments.map(c => c.id),
       ...gaVisitors.map(c => c.id),
+      ...connAccepted.map(c => c.id),
     ]);
     const other = allCards.filter(c => !accountedFor.has(c.id));
     const byScore = (a, b) => (b.score || 0) - (a.score || 0);
@@ -1338,13 +1348,16 @@ export default function SideKick() {
     // LinkedIn-post cards — movement / top-leads / GA cards are hidden.
     const sortedStack = FEATURES.otherCards
       ? [
+          ...connAccepted.sort(byPriority),
           ...movements.sort(byScore),
           ...topLeads.sort(byScore),
           ...liComments.sort(byPriority),
           ...gaVisitors.sort(byScore),
           ...other.sort(byScore),
         ]
-      : liComments.sort(byPriority);
+      // Stripped queue (otherCards off): warm-intro connection-accepted tasks
+      // first (time-sensitive priority), then LinkedIn-post tasks.
+      : [...connAccepted.sort(byPriority), ...liComments.sort(byPriority)];
 
     // 2. Daily batch step — merge all pending_approval records into ONE virtual
     //    batch. Dedup by record id, then by name+company.
@@ -2615,6 +2628,10 @@ function Card({ card, leaving, enriching, subject, meta, summary, onAction, onEn
   // Has either summary or raw signal to show?
   const hasSignal = !!card.signal;
   const summaryIsReady = summary && summary !== "loading" && summary !== "error";
+  // Connection-accepted (warm-intro) tasks: show the raw signal by default — it
+  // carries the connection DATE + "warm intro window" note the operator needs
+  // (answers the "when did I connect with this person" ask). No AI summary.
+  const isConnAccepted = card.task_type === "unipile_connection_accepted";
 
   // Relevance affordances — the real company is the stored `company` even on an
   // Exited card (the meta DISPLAYS it as "Ex-…", but the suppress rule must use
@@ -2727,12 +2744,12 @@ function Card({ card, leaving, enriching, subject, meta, summary, onAction, onEn
               />
             </div>
           )}
-          {!showFullData && summary === "loading" && (
+          {!isConnAccepted && !showFullData && summary === "loading" && (
             <div className="card-summary card-summary-loading">
               <span className="spinner spinner-sm" /> Generating SDR summary…
             </div>
           )}
-          {!showFullData && summaryIsReady && (
+          {!isConnAccepted && !showFullData && summaryIsReady && (
             <FeedbackCapture
               itemType="comment"
               leadName={card.lead_name}
@@ -2743,15 +2760,16 @@ function Card({ card, leaving, enriching, subject, meta, summary, onAction, onEn
               <div className="li-post-fbhint" aria-hidden="true">💬 highlight to give feedback</div>
             </FeedbackCapture>
           )}
-          {(showFullData || summary === "error") && (
+          {(isConnAccepted || showFullData || summary === "error") && (
             <div className="card-signal-text">
               <ExpandableSignal text={formatSignalText(card.signal)} threshold={8} />
             </div>
           )}
           {/* Toggle: only show once summary has resolved (success or error).
               When summary is "error", the full data is already showing, so the
-              toggle button just lets the operator collapse it back if they want. */}
-          {(summaryIsReady || summary === "error") && (
+              toggle button just lets the operator collapse it back if they want.
+              Connection-accepted always shows raw signal, so no toggle. */}
+          {!isConnAccepted && (summaryIsReady || summary === "error") && (
             <button
               className="card-view-more-btn"
               onClick={(e) => { e.stopPropagation(); setShowFullData(v => !v); }}
@@ -2860,9 +2878,10 @@ function Card({ card, leaving, enriching, subject, meta, summary, onAction, onEn
         </div>
       </div>
 
-      {/* Keyboard hint — desktop only (hidden on touch via CSS) */}
+      {/* Keyboard hint — desktop only (hidden on touch via CSS).
+          Enter is NOT a Done shortcut anymore (Kunal 2026-06-19) — use D. */}
       <div className="card-kbd-hint" aria-hidden="true">
-        <span className="kb-key">↵</span> done · <span className="kb-key">S</span> skip · <span className="kb-key">U</span> undo
+        <span className="kb-key">D</span> done · <span className="kb-key">S</span> skip · <span className="kb-key">U</span> undo
       </div>
     </div>
   );
