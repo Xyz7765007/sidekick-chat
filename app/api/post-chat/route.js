@@ -1,17 +1,17 @@
 // ═══════════════════════════════════════════════════════════════════
-// POST /api/post-chat   (Kunal Jun16 — per-post context chatbot)
-// Body: { message, post, author?, history? }
-//   - message : the exec's question ("simplify this for me", "who is this")
-//   - post    : the raw LinkedIn post text (the ONLY context the bot has)
-//   - author  : optional "Name — Title — Company" identity string
+// POST /api/post-chat   (per-TASK context chatbot)
+// Body: { message, post?, author?, history?, leadContext? }
+//   - message : the exec's question ("simplify this", "who is this", "is this a fit")
+//   - post    : the raw LinkedIn post text (when the task is a post). Optional —
+//               non-post tasks (connection accepted, DM reply, etc.) have none.
+//   - author  : "Name — Title — Company" identity string
 //   - history : optional [{ role:'user'|'assistant', text }] (capped here)
+//   - leadContext : optional { score, signal, task_rule, task_type } — the card's
+//               INTERNAL context (why it surfaced, fit score, the signal event).
+//               Used for the bot's REASONING only; never leaked into drafted copy.
 //
-// Returns { ok, reply }. A tiny, single-post helper — NOT the full chat
-// orchestrator (/api/chat). It can ONLY talk about the post it's handed,
-// so it never touches SignalScope, leads, or tools. Cheap path: Haiku.
-//
-// Why a separate route: keeps the focused card self-contained and the
-// blast radius zero — no lead data, no actions, no tool loop.
+// Returns { ok, reply, feedback? }. Scoped to ONE task (this post/lead) + the
+// operator's Veloka GTM context. It does NOT have the wider feed or tools.
 // ═══════════════════════════════════════════════════════════════════
 
 export const dynamic = "force-dynamic";
@@ -34,22 +34,32 @@ function extractJSON(raw) {
   catch { return null; }
 }
 
-const SYSTEM_PROMPT = `You are Side Kick — an outbound co-pilot helping a busy B2B sales operator decide how to engage with ONE specific LinkedIn post (their current task) and act on it.
+const SYSTEM_PROMPT = `You are Side Kick — an outbound co-pilot helping a busy B2B sales operator decide how to act on ONE specific task (the lead/post below) and execute it.
 
 WHO THE OPERATOR IS (their GTM context — use this to judge fit and suggest moves):
-- They run outbound for Veloka, a B2B outbound-infrastructure motion. The play: spot a real buying/engagement signal (like this LinkedIn post), then engage the author authentically — comment, connect, then DM — to open a conversation. No spray-and-pray.
-- Their ideal customer (ICP): companies with an established sales motion, a real marketing org, and meaningful deal size (high ACV). A senior, relevant author at an in-ICP company is a strong engage signal.
-- The goal of engaging a post is to earn a warm reply that leads to a connection and a conversation, not to pitch in the comments.
+- They run outbound for Veloka, a B2B outbound-infrastructure motion. The play: spot a real buying/engagement signal (a post, a connection accepted, a DM reply, etc.), then engage the person authentically — comment, connect, then DM — to open a conversation. No spray-and-pray.
+- Their ideal customer (ICP): companies with an established sales motion, a real marketing org, and meaningful deal size (high ACV). A senior, relevant person at an in-ICP company is a strong engage signal.
+- The goal is to earn a warm reply that leads to a connection and a conversation, not to pitch.
 
-WHAT YOU CAN HELP WITH (this post + author + the operator's GTM context):
-- Simplify / explain the post in plain English; strip jargon.
-- Who is this and why does this matter — using the author identity + post content given.
-- Whether this post is a fit for the operator's GTM/ICP and WHY (is the author senior and relevant, is the topic a buying signal, is now a good moment to engage), and the smartest next move (comment, connect, DM, or skip).
-- Draft a comment, a connection note, or a short DM opener tied to THIS post when asked — sound human and specific to the post, never salesy or templated, no "great post!" filler.
+THE TASK MAY NOT BE A POST. It can be a LinkedIn post, OR an outreach-sequence event:
+- "Connection accepted" → the invite was accepted; a warm intro window is open — the move is usually a first DM that references why you connected.
+- "DM reply" → the lead replied; this is the hottest signal — help craft a reply that moves toward a call.
+- "Reacted/commented/viewed" → lighter engagement; suggest the proportionate next touch.
+Read the task type and signal below to know which it is, and advise accordingly.
+
+WHAT YOU CAN HELP WITH (this task + person + the operator's GTM context):
+- Simplify / explain the post or the event in plain English; strip jargon.
+- Who is this and why does this matter — using the identity + content + signal given.
+- Whether this is a fit for the operator's GTM/ICP and WHY, and the smartest next move (comment, connect, DM, reply, or skip).
+- Draft a comment, connection note, DM, or reply tied to THIS task when asked — human and specific, never salesy or templated, no "great post!" filler.
+
+USING THE INTERNAL CONTEXT (when provided below):
+- You may be given the card's INTERNAL context: a fit score (e.g. "70/100"), the matched rules, and the raw signal. Use these to REASON and advise the operator (e.g. "strong fit because…", "this is why it surfaced").
+- NEVER put the score, the fit percentage, or internal rule names into any comment, DM, connection note, or reply you draft. Drafted copy is lead-facing — it must read like a human wrote it, with zero internal scoring language.
 
 GUARDRAILS:
-- Stay grounded in THIS post + author + the GTM context above. Do NOT invent facts about the person or company beyond what's given; if you don't know, say so plainly.
-- You do NOT have the operator's wider lead feed, scores, or tools here — if they ask about other leads or the queue, say this chat is scoped to this post.
+- Stay grounded in THIS task + person + the GTM/internal context below. Do NOT invent facts beyond what's given; if you don't know, say so plainly.
+- You do NOT have the operator's WIDER lead feed or tools here — if they ask about OTHER leads or the queue, say this chat is scoped to this task.
 - Be brief and plain. Default to 1-4 short sentences. No preamble, no "great question", no bullet dumps unless asked.
 - No em dashes.
 
@@ -74,25 +84,38 @@ export async function POST(request) {
     return Response.json({ ok: false, error: "Invalid JSON" }, { status: 400 });
   }
 
-  const { message, post, author, history } = body || {};
+  const { message, post, author, history, leadContext } = body || {};
   if (!message || !String(message).trim()) {
     return Response.json({ ok: false, error: "message required" }, { status: 400 });
   }
-  if (!post || !String(post).trim()) {
-    return Response.json({ ok: false, error: "post text required" }, { status: 400 });
+  const postText = post ? String(post).trim() : "";
+  const lc = (leadContext && typeof leadContext === "object") ? leadContext : {};
+  const signalText = lc.signal ? String(lc.signal).trim() : "";
+  // Need SOMETHING to talk about: a post, or the lead's signal/context.
+  if (!postText && !signalText && !author) {
+    return Response.json({ ok: false, error: "post or leadContext required" }, { status: 400 });
   }
 
-  // The post + author identity are pinned into the system prompt so they
-  // can't be argued away by the conversation. Cap the post so a huge paste
-  // can't blow the token budget.
-  const postBlock = [
-    author ? `Post author: ${String(author).trim()}` : null,
-    "",
-    "The LinkedIn post (the only thing you may discuss):",
-    "\"\"\"",
-    String(post).slice(0, 6000).trim(),
-    "\"\"\"",
-  ].filter(Boolean).join("\n");
+  // Pin the task's context into the system prompt so it can't be argued away.
+  // Three parts: who (author), the post (if any), and the INTERNAL context
+  // (score/rule/signal) the bot may reason with but must not leak into copy.
+  const taskTypeLabel = lc.task_rule ? String(lc.task_rule).trim()
+    : (lc.task_type ? String(lc.task_type).trim() : "");
+  const contextBlock = [
+    author ? `Person: ${String(author).trim()}` : null,
+    taskTypeLabel ? `Task type: ${taskTypeLabel}` : null,
+    postText ? "" : null,
+    postText ? "The LinkedIn post:" : null,
+    postText ? "\"\"\"" : null,
+    postText ? postText.slice(0, 6000) : null,
+    postText ? "\"\"\"" : null,
+    (signalText || (lc.score !== undefined && lc.score !== null)) ? "" : null,
+    (signalText || (lc.score !== undefined && lc.score !== null))
+      ? "INTERNAL CONTEXT (for your reasoning ONLY — never quote scores or rule names in drafted copy):"
+      : null,
+    (lc.score !== undefined && lc.score !== null) ? `- Fit score: ${lc.score}/100` : null,
+    signalText ? `- Signal / why this surfaced:\n${signalText.slice(0, 3000)}` : null,
+  ].filter(v => v !== null && v !== undefined).join("\n");
 
   // Carry a short rolling history (last 6 turns) so follow-ups work, but
   // keep it bounded — this is a quick helper, not a long thread.
@@ -116,7 +139,7 @@ export async function POST(request) {
       body: JSON.stringify({
         model: POST_CHAT_MODEL,
         max_tokens: 500,
-        system: `${SYSTEM_PROMPT}\n\n${postBlock}`,
+        system: `${SYSTEM_PROMPT}\n\n${contextBlock}`,
         messages,
       }),
     });

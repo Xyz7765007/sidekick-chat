@@ -2956,6 +2956,20 @@ function Card({ card, leaving, enriching, subject, meta, summary, onAction, onEn
         </div>
       </div>
 
+      {/* Ask-about-this-task chat on every card type (not just LinkedIn posts).
+          Non-post tasks (connection accepted, DM reply, top leads…) have no
+          post_text, so the bot works off the signal + full lead context. */}
+      {FEATURES.postContextChat && (card.post_text || card.signal) && (
+        <PostChat
+          post={card.post_text || ""}
+          author={postAuthorLine(card)}
+          cardId={card.id}
+          leadName={card.lead_name}
+          leadCompany={card.company}
+          leadContext={{ score: card.score, signal: card.signal, task_rule: card.task_rule, task_type: card.task_type }}
+        />
+      )}
+
       {/* Keyboard hint — desktop only (hidden on touch via CSS).
           Enter is NOT a Done shortcut anymore (Kunal 2026-06-19) — use D. */}
       <div className="card-kbd-hint" aria-hidden="true">
@@ -3329,7 +3343,8 @@ function LinkedInCommentCard({
           a tiny inline chat scoped ONLY to this post — "simplify this for
           me", "who is this". Backed by /api/post-chat. */}
       {FEATURES.postContextChat && rawPostText && (
-        <PostChat post={rawPostText} author={postAuthorLine(card)} cardId={card.id} leadName={card.lead_name} leadCompany={card.company} />
+        <PostChat post={rawPostText} author={postAuthorLine(card)} cardId={card.id} leadName={card.lead_name} leadCompany={card.company}
+          leadContext={{ score: card.score, signal: card.signal, task_rule: card.task_rule, task_type: card.task_type }} />
       )}
 
       {/* Angle chips */}
@@ -3611,7 +3626,7 @@ function SkipReason({ onConfirm, onCancel, disabled }) {
 // for me", "who is this", "why does this matter". Hits /api/post-chat,
 // which can ONLY discuss the post text it's handed (no leads, no tools).
 // ═══════════════════════════════════════════════════════════════════
-function PostChat({ post, author, cardId, leadName, leadCompany }) {
+function PostChat({ post, author, cardId, leadName, leadCompany, leadContext }) {
   const [open, setOpen] = useState(false);
   const [msgs, setMsgs] = useState([]); // { role:'user'|'assistant', text }
   const [input, setInput] = useState("");
@@ -3662,7 +3677,7 @@ function PostChat({ post, author, cardId, leadName, leadCompany }) {
       const r = await fetch("/api/post-chat", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ message: text, post, author, history }),
+        body: JSON.stringify({ message: text, post, author, history, leadContext }),
       });
       const data = await r.json();
       setMsgs((m) => [...m, { role: "assistant", text: data?.ok ? data.reply : (data?.error || "Couldn't answer that.") }]);
