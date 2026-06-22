@@ -855,6 +855,18 @@ export default function SideKick() {
   const [handledOpen, setHandledOpen] = useState(false);
   const [handledList, setHandledList] = useState({ status: "idle", items: [] });
   const lastHandledRef = useRef(null); // last task id actioned this session
+  // ─── Reopen/undo optimism (instant UI, no manual refresh) ──────────
+  // Airtable's filterByFormula lags a beat after {Handled At} is cleared, so a
+  // refetch right after a reopen comes back WITHOUT the task — the operator used
+  // to have to refresh the page to see it. We instead re-insert the card
+  // immediately and keep "forcing" it into the feed until the backend catches
+  // up. reopenedRef: id → card still being forced. reopenCardRef: id → card
+  // captured at action time (so Undo can re-insert a done/skip card we removed).
+  // pendingRemovalRef: id → the done/skip removal timeout, so reopen can cancel
+  // it and the card isn't yanked out from under a fast Undo.
+  const reopenedRef = useRef(new Map());
+  const reopenCardRef = useRef(new Map());
+  const pendingRemovalRef = useRef(new Map());
   const [editingDraft, setEditingDraft] = useState(null); // { recordId, field, text }
   const [batchGenerating, setBatchGenerating] = useState(false);
 
@@ -993,13 +1005,34 @@ export default function SideKick() {
       ]);
       const data = await r.json();
       if (data.ok) {
-        setCards(data.cards || []);
+        let feedCards = data.cards || [];
+        // Merge optimistically-reopened cards the backend feed hasn't caught up
+        // to yet (Airtable filterByFormula lags a beat after {Handled At} clears).
+        // Once a forced card actually shows in the feed, stop forcing it.
+        let forcedExtra = 0;
+        if (reopenedRef.current.size) {
+          const feedIds = new Set(feedCards.map((c) => c.id));
+          for (const [id, card] of Array.from(reopenedRef.current.entries())) {
+            if (feedIds.has(id)) {
+              reopenedRef.current.delete(id); // feed caught up
+            } else {
+              feedCards = [card, ...feedCards.filter((c) => c.id !== id)];
+              // Count it toward the badge only if it's in the badge's scope.
+              if (FEATURES.otherCards || card.task_type === "linkedin_engagement" ||
+                  (card.task_type || "").startsWith("unipile_")) {
+                forcedExtra++;
+              }
+            }
+          }
+        }
+        setCards(feedCards);
         // Prefer the true total from /api/count; fall back to the feed page size.
         let n = typeof data.count === "number" ? data.count : (data.cards || []).length;
         if (rc && rc.ok) {
           const cd = await rc.json().catch(() => null);
           if (cd && cd.ok && typeof cd.count === "number") n = cd.count;
         }
+        n += forcedExtra; // reflect still-pending reopened cards the count missed
         setCount(n);
         countRef.current = n;
         setFetchError(null);
@@ -1464,6 +1497,9 @@ export default function SideKick() {
   // the Task record with Handled At/As/Notes fields.
   async function handleAction(taskId, action) {
     setLeaving((s) => new Set([...s, taskId]));
+    // Stash the card so Undo can re-insert it instantly (no refetch round-trip).
+    const cardObj = cards.find((c) => c.id === taskId);
+    if (cardObj) reopenCardRef.current.set(taskId, cardObj);
 
     try {
       const r = await fetch("/api/action", {
@@ -1473,7 +1509,10 @@ export default function SideKick() {
       });
       const data = await r.json();
       if (data.ok) {
-        setTimeout(() => {
+        // Schedule the removal but keep its handle so a fast Undo can cancel it
+        // (otherwise the timeout fires after reopen and yanks the card back out).
+        const tid = setTimeout(() => {
+          pendingRemovalRef.current.delete(taskId);
           setCards((c) => c.filter((card) => card.id !== taskId));
           setCount((n) => { const nn = Math.max(0, n - 1); countRef.current = nn; return nn; });
           setLeaving((s) => { const ns = new Set(s); ns.delete(taskId); return ns; });
@@ -1483,6 +1522,7 @@ export default function SideKick() {
             stickyTopIdRef.current = null;
           }
         }, 300);
+        pendingRemovalRef.current.set(taskId, tid);
         setSessionDone((n) => n + 1);
         lastHandledRef.current = taskId;
         showToast(
@@ -1768,7 +1808,10 @@ export default function SideKick() {
     }
   }, []);
 
-  async function reopenTask(taskId) {
+  async function reopenTask(taskId, cardData) {
+    // The card to put back on screen: the one passed (Handled panel hands us the
+    // full record), else the one we stashed when it was actioned this session.
+    const card = cardData || reopenCardRef.current.get(taskId);
     try {
       const r = await fetch("/api/action", {
         method: "POST",
@@ -1777,13 +1820,31 @@ export default function SideKick() {
       });
       const data = await r.json();
       if (data.ok) {
+        // Cancel any in-flight done/skip removal so it can't yank the card back
+        // out after we re-insert it (fast-Undo race).
+        const pend = pendingRemovalRef.current.get(taskId);
+        if (pend) { clearTimeout(pend); pendingRemovalRef.current.delete(taskId); }
+        setLeaving((s) => { const ns = new Set(s); ns.delete(taskId); return ns; });
+
+        // OPTIMISTIC: put the card straight back on screen now. Airtable's feed
+        // filter lags a beat after Handled At clears, so we also "force" it via
+        // reopenedRef until a later fetchFeed confirms it's really back — no
+        // manual page refresh needed.
+        if (card) {
+          reopenedRef.current.set(taskId, card);
+          setCards((c) => (c.some((x) => x.id === taskId) ? c : [card, ...c]));
+          setCount((n) => { const nn = n + 1; countRef.current = nn; return nn; });
+        }
+        reopenCardRef.current.delete(taskId);
         setDeferred((d) => d.filter((k) => k !== taskId));
         setSessionDone((n) => Math.max(0, n - 1));
         if (lastHandledRef.current === taskId) lastHandledRef.current = null;
         stickyTopIdRef.current = taskId; // straight back into focus
-        await fetchFeed();
         setHandledOpen(false);
         showToast("Reopened — back in focus");
+        // Reconcile in the background; fetchFeed merges reopenedRef so a lagging
+        // feed can't drop the card we just restored.
+        fetchFeed();
       } else {
         showToast(`Error: ${data.error || "Couldn't reopen"}`, 4000);
       }
@@ -1802,6 +1863,7 @@ export default function SideKick() {
   async function markNotNeeded(card) {
     const taskId = card.id;
     setLeaving((s) => new Set([...s, taskId]));
+    reopenCardRef.current.set(taskId, card); // stash for instant Undo
     try {
       const r = await fetch("/api/action", {
         method: "POST",
@@ -1810,12 +1872,14 @@ export default function SideKick() {
       });
       const data = await r.json();
       if (data.ok) {
-        setTimeout(() => {
+        const tid = setTimeout(() => {
+          pendingRemovalRef.current.delete(taskId);
           setCards((c) => c.filter((cc) => cc.id !== taskId));
           setCount((n) => { const nn = Math.max(0, n - 1); countRef.current = nn; return nn; });
           setLeaving((s) => { const ns = new Set(s); ns.delete(taskId); return ns; });
           if (stickyTopIdRef.current === taskId) stickyTopIdRef.current = null;
         }, 300);
+        pendingRemovalRef.current.set(taskId, tid);
         setSessionDone((n) => n + 1);
         lastHandledRef.current = taskId;
         showToast("Marked not needed", 6000, { label: "Undo", onUndo: () => reopenTask(taskId) });
@@ -2214,7 +2278,7 @@ Best,
                       <span>{handledAgo(it.handled_at)}</span>
                     </div>
                   </div>
-                  <button className="btn hist-reopen" onClick={() => reopenTask(it.id)} type="button">
+                  <button className="btn hist-reopen" onClick={() => reopenTask(it.id, it)} type="button">
                     ↩ Reopen
                   </button>
                 </div>
