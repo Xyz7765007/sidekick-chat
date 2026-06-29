@@ -37,6 +37,16 @@ button opens it; it takes over the single-card column (clears `topCardRef`).
   the card dark — curl `/api/post-create` with each mode. Verified Jun30: all
   three modes return correct shapes against the real model.
 
-## Still gated OFF
-`FEATURES.postCreate: false`. Flip to `true` to turn it on for the operator —
-that one-line change is the actual go-live and Kunal's call to make.
+## Go-live + UX pass (same day)
+Turned ON (`FEATURES.postCreate: true`) after a UX tightening to Kunal's
+less-is-more bar:
+- Hooks render ONLY during selection, then collapse to a single gray chosen-hook
+  recap (mockup parity — one thing in focus) with a quiet "change hook" link.
+- The agent chat renders only once a post exists (no premature surface).
+- "← edit what you said" quiet link back to compose.
+Verified live with a headless Chrome click-through (puppeteer-core in scratch,
+no repo dep): header button present; 3 hooks tagged Trending/ICP/Competitor;
+footer is exactly Mark-as-done/Skip/Regenerate-hooks; computed colors show
+Mark-as-done is the ONLY orange (bg rgb(224,123,58)), Skip + Regenerate white;
+pick collapses hooks→chosen recap; Generate yields an in-voice post (798 chars)
+with Copy/Open + the agent chat appearing. Commit `7bbaf58`.
