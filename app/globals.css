@@ -2312,3 +2312,126 @@ body { position: relative; }
 }
 .postchat-send:disabled { opacity: 0.45; cursor: not-allowed; }
 .postchat-send .spinner-sm { border-color: rgba(255,255,255,0.35); border-top-color: #fff; }
+
+/* ═══ POST CREATOR CARD — the "hooks engine" (Kunal Jun30) ═══════════
+   One card: a scrollable content area + a fixed 3-button footer. Orange
+   is reserved for Mark-as-done only; every other surface here is neutral
+   (Kunal: "make it gray, not orange"). */
+.hdr-action-active { color: var(--accent-dark); border-color: var(--accent); background: var(--accent-bg); }
+
+.pc-card {
+  display: flex; flex-direction: column;
+  max-height: calc(100vh - 210px);
+  padding: 0; overflow: hidden;
+}
+.pc-scroll { flex: 1 1 auto; overflow-y: auto; padding: 20px 22px 14px; }
+.pc-foot {
+  display: flex; gap: 8px; flex-wrap: wrap;
+  padding: 12px 18px; border-top: 1px solid var(--border);
+  background: var(--bg-warm);
+}
+
+.pc-hdr { display: flex; flex-direction: column; gap: 3px; margin-bottom: 14px; }
+.pc-title { font-size: 16px; font-weight: 700; color: var(--text); }
+.pc-sub { font-size: 12.5px; color: var(--text-2); }
+
+.pc-step {
+  font-size: 11px; font-weight: 700; text-transform: uppercase; letter-spacing: .6px;
+  color: var(--text-3); margin: 16px 0 9px;
+}
+.pc-step:first-of-type { margin-top: 4px; }
+.pc-step-opt { font-weight: 500; text-transform: none; letter-spacing: 0; color: var(--text-3); }
+
+.pc-loading, .pc-error { font-size: 13px; color: var(--text-2); padding: 8px 0; display: flex; align-items: center; gap: 8px; }
+.pc-error { color: var(--danger); }
+.pc-link { background: none; border: none; color: var(--accent-dark); font: inherit; cursor: pointer; text-decoration: underline; padding: 0; }
+
+.pc-hooks { display: flex; flex-direction: column; gap: 9px; }
+.pc-hook {
+  text-align: left; font-family: inherit; cursor: pointer;
+  background: var(--bg-warm); border: 1px solid var(--border); border-radius: var(--r-sm);
+  padding: 12px 14px; font-size: 13.5px; color: var(--text); line-height: 1.45;
+  transition: border-color .14s, background .14s, transform .14s, box-shadow .14s;
+}
+.pc-hook:hover { border-color: var(--border-2); background: #fff; transform: translateX(2px); }
+.pc-hook-tag {
+  display: block; font-size: 10.5px; font-weight: 700; color: var(--text-3);
+  text-transform: uppercase; letter-spacing: .5px; margin-bottom: 5px;
+}
+/* Selected hook = NEUTRAL gray highlight (not orange). */
+.pc-hook-active {
+  border-color: var(--border-2); background: #F0EEE9;
+  box-shadow: inset 3px 0 0 var(--text-3);
+}
+.pc-hook-active .pc-hook-tag { color: var(--text-2); }
+.pc-justrec {
+  background: none; border: none; font: inherit; cursor: pointer;
+  color: var(--text-2); font-weight: 600; text-align: center; padding: 6px; margin-top: 2px;
+}
+.pc-justrec:hover { color: var(--text); }
+
+/* Chosen-hook recap (neutral, not the mockup's orange). */
+.pc-chosen {
+  background: #F0EEE9; border: 1px solid var(--border-2); border-left: 3px solid var(--text-3);
+  border-radius: var(--r-sm); padding: 11px 14px; font-size: 13px; line-height: 1.5;
+  color: var(--text); margin-bottom: 4px;
+}
+.pc-chosen span {
+  display: block; font-size: 10.5px; font-weight: 700; color: var(--text-2);
+  text-transform: uppercase; letter-spacing: .5px; margin-bottom: 4px;
+}
+
+.pc-compose { display: flex; flex-direction: column; gap: 10px; }
+.pc-mic {
+  align-self: flex-start; font: inherit; font-size: 13px; cursor: pointer;
+  background: var(--bg-warm); border: 1px solid var(--border-2); border-radius: var(--r-sm);
+  padding: 8px 14px; color: var(--text); transition: all .14s;
+}
+.pc-mic:hover { background: #fff; }
+.pc-mic-on { color: var(--danger); border-color: rgba(224,82,82,0.45); background: var(--danger-bg); }
+.pc-notes {
+  width: 100%; box-sizing: border-box; resize: vertical; min-height: 86px;
+  font: inherit; font-size: 13.5px; line-height: 1.5; color: var(--text);
+  background: var(--bg-warm); border: 1px solid var(--border); border-radius: var(--r-sm); padding: 11px 13px;
+}
+.pc-notes:focus { outline: none; border-color: var(--border-2); background: #fff; }
+.pc-gen { align-self: flex-start; }
+
+.pc-postblock { margin-top: 16px; }
+.pc-post-hdr { display: flex; align-items: center; justify-content: space-between; margin-bottom: 7px; }
+.pc-chip {
+  font-size: 11px; font-weight: 600; color: var(--success);
+  background: var(--success-bg); border-radius: 999px; padding: 3px 10px;
+}
+.pc-cc { font-size: 11px; color: var(--text-3); }
+.pc-post-edit {
+  width: 100%; box-sizing: border-box; resize: vertical;
+  font: inherit; font-size: 14px; line-height: 1.6; color: var(--text);
+  background: #fff; border: 1px solid var(--border-2); border-radius: var(--r-sm); padding: 13px 15px;
+}
+.pc-post-edit:focus { outline: none; border-color: var(--text-3); box-shadow: 0 0 0 3px rgba(26,24,20,0.05); }
+.pc-post-row { display: flex; gap: 8px; margin-top: 10px; }
+
+/* Agent chat — appends into the scroll area, never pinned. */
+.pc-agent { margin-top: 20px; padding-top: 14px; border-top: 1px dashed var(--border); }
+.pc-agent-lbl { font-size: 12.5px; font-weight: 600; color: var(--text-2); margin-bottom: 8px; }
+.pc-agent-thread { display: flex; flex-direction: column; gap: 7px; max-height: 220px; overflow-y: auto; margin-bottom: 9px; }
+.pc-agent-inputwrap { display: flex; gap: 7px; }
+.pc-agent-input {
+  flex: 1; font: inherit; font-size: 13px; color: var(--text);
+  background: var(--bg-warm); border: 1px solid var(--border); border-radius: var(--r-sm); padding: 9px 12px;
+}
+.pc-agent-input:focus { outline: none; border-color: var(--border-2); background: #fff; }
+.pc-agent-send {
+  width: 38px; flex: 0 0 38px; border: none; border-radius: var(--r-sm);
+  background: var(--text); color: #fff; font-size: 15px; cursor: pointer;
+  display: inline-flex; align-items: center; justify-content: center;
+}
+.pc-agent-send:disabled { opacity: 0.4; cursor: not-allowed; }
+.pc-agent-send .spinner-sm { border-color: rgba(255,255,255,0.35); border-top-color: #fff; }
+
+@media (max-width: 560px) {
+  .pc-card { max-height: calc(100vh - 170px); }
+  .pc-foot .btn { flex: 1; justify-content: center; }
+  .pc-post-row .btn { flex: 1; justify-content: center; }
+}

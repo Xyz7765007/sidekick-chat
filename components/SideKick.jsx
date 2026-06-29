@@ -853,6 +853,8 @@ export default function SideKick() {
   // action toast, the U hotkey (last action this session), and the
   // Handled panel (any recently handled task, survives reloads).
   const [handledOpen, setHandledOpen] = useState(false);
+  // Post-creation "hooks engine" overlay (Kunal Jun30) — gated on FEATURES.postCreate.
+  const [postCreateOpen, setPostCreateOpen] = useState(false);
   const [handledList, setHandledList] = useState({ status: "idle", items: [] });
   const lastHandledRef = useRef(null); // last task id actioned this session
   // ─── Reopen/undo optimism (instant UI, no manual refresh) ──────────
@@ -1985,6 +1987,15 @@ Best,
             >
               ↩<span className="hdr-action-label"> Handled</span>
             </button>
+            {FEATURES.postCreate && (
+              <button
+                className={`hdr-action ${postCreateOpen ? "hdr-action-active" : ""}`}
+                onClick={() => setPostCreateOpen(o => !o)}
+                title="Create an original LinkedIn post"
+              >
+                ✎<span className="hdr-action-label"> {postCreateOpen ? "Close" : "Create post"}</span>
+              </button>
+            )}
             {FEATURES.connectionFlow && (
               <button
                 className="hdr-action"
@@ -2026,6 +2037,24 @@ Best,
             LinkedIn follow-ups are hidden for now (Unipile drives that
             state automatically); the outreach handlers stay wired. */}
         {!loading && !fetchError && (() => {
+          // Post-creation overlay takes over the single-card column when open.
+          // It is not a queue task — clear the focus ref so card keyboard
+          // shortcuts don't fire on a stale card behind it.
+          if (postCreateOpen) {
+            topCardRef.current = null;
+            return (
+              <div className="task-stack">
+                <PostCreatorCard
+                  onClose={(action) => {
+                    setPostCreateOpen(false);
+                    if (action === "done") showToast("Post marked done", 2600);
+                  }}
+                  onCopied={(msg) => showToast(msg, 2600)}
+                />
+              </div>
+            );
+          }
+
           // Steps 1-4 (group+score sort, virtual batch step, deferred sinking)
           // now live in the `orderedQueue` memo — the SINGLE source of truth the
           // item-8 prefetch effect also consumes, so prefetch can't drift from
@@ -3742,6 +3771,299 @@ function PostChat({ post, author, cardId, leadName, leadCompany, leadContext }) 
         <button type="button" className="postchat-send" disabled={busy || !input.trim()} onClick={() => send(input)} aria-label="Send">
           {busy ? <span className="spinner spinner-sm" /> : "→"}
         </button>
+      </div>
+    </div>
+  );
+}
+
+// ═══════════════════════════════════════════════════════════════════
+// POST CREATOR CARD — the "hooks engine" (Kunal Jun30 feedback standup)
+//
+// The second paid value prop: create an ORIGINAL LinkedIn post. One card,
+// fixed footer, never auto-posts. Flow:
+//   stage "hooks"   → pick 1 of 3 AI hooks (Trending / ICP / Competitor),
+//                     or "skip — just record".
+//   stage "compose" → record (Web Speech API, native — no dep) or type the
+//                     gist → Generate.
+//   stage "post"    → editable post in your voice + live char count +
+//                     Copy / Open LinkedIn (manual).
+// "Talk to your agent about this task" refines the draft live (mode:refine).
+// Footer is ALWAYS the standard 3: Mark as done (primary/orange) · Skip ·
+// Regenerate hooks. Orange is reserved for Mark as done only (Kunal: "make
+// it gray, not orange" — every other surface here is neutral).
+// ═══════════════════════════════════════════════════════════════════
+function PostCreatorCard({ onClose, onCopied }) {
+  const [stage, setStage] = useState("hooks");            // hooks | compose | post
+  const [hooks, setHooks] = useState([]);
+  const [hooksStatus, setHooksStatus] = useState("loading"); // loading | ready | error
+  const [chosenHook, setChosenHook] = useState(null);
+  const [notes, setNotes] = useState("");
+  const [post, setPost] = useState("");
+  const [genStatus, setGenStatus] = useState("idle");     // idle | loading | ready | error
+  const [busyFooter, setBusyFooter] = useState(false);
+  const seenHooksRef = useRef([]);                         // lines already shown → regenerate "avoid"
+
+  // ── voice: browser-native Web Speech API (no new dep; Chrome/Edge) ──
+  const [listening, setListening] = useState(false);
+  const [voiceSupported, setVoiceSupported] = useState(false);
+  const recogRef = useRef(null);
+  const notesBaseRef = useRef("");
+
+  // ── agent chat ("Talk to your agent about this task") ──
+  const [chatMsgs, setChatMsgs] = useState([]);
+  const [chatInput, setChatInput] = useState("");
+  const [chatBusy, setChatBusy] = useState(false);
+  const threadRef = useRef(null);
+
+  // First 3 hooks on mount; detect voice support; stop mic on unmount.
+  useEffect(() => { loadHooks(false); /* eslint-disable-next-line react-hooks/exhaustive-deps */ }, []);
+  useEffect(() => {
+    const SR = typeof window !== "undefined" && (window.SpeechRecognition || window.webkitSpeechRecognition);
+    setVoiceSupported(!!SR);
+    return () => { try { recogRef.current?.stop(); } catch {} };
+  }, []);
+  useEffect(() => {
+    if (threadRef.current) threadRef.current.scrollTop = threadRef.current.scrollHeight;
+  }, [chatMsgs, chatBusy]);
+
+  async function loadHooks(regenerate) {
+    setHooksStatus("loading");
+    if (regenerate) { setChosenHook(null); setPost(""); setStage("hooks"); setGenStatus("idle"); }
+    try {
+      const r = await fetch("/api/post-create", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ mode: "hooks", avoid: regenerate ? seenHooksRef.current.slice(-9) : [] }),
+      });
+      const d = await r.json();
+      if (d?.ok && Array.isArray(d.hooks) && d.hooks.length) {
+        setHooks(d.hooks);
+        seenHooksRef.current = [...seenHooksRef.current, ...d.hooks.map(h => h.line)];
+        setHooksStatus("ready");
+      } else { setHooksStatus("error"); }
+    } catch { setHooksStatus("error"); }
+  }
+
+  function pickHook(h) { setChosenHook(h); setStage("compose"); }
+  function skipToRecord() { setChosenHook(null); setStage("compose"); }
+
+  // Web Speech API: toggle dictation. Final results append to a base buffer;
+  // interim text is shown live. Rough transcript → the generate step shapes it.
+  function toggleVoice() {
+    if (!voiceSupported) return;
+    if (listening) { try { recogRef.current?.stop(); } catch {} return; }
+    const SR = window.SpeechRecognition || window.webkitSpeechRecognition;
+    const rec = new SR();
+    rec.lang = "en-US"; rec.continuous = true; rec.interimResults = true;
+    notesBaseRef.current = notes ? notes.trim() + " " : "";
+    rec.onresult = (e) => {
+      let finalT = "", interim = "";
+      for (let i = e.resultIndex; i < e.results.length; i++) {
+        const t = e.results[i][0].transcript;
+        if (e.results[i].isFinal) finalT += t; else interim += t;
+      }
+      if (finalT) notesBaseRef.current = notesBaseRef.current + finalT + " ";
+      setNotes((notesBaseRef.current + interim).slice(0, 4000));
+    };
+    rec.onerror = () => setListening(false);
+    rec.onend = () => setListening(false);
+    recogRef.current = rec;
+    try { rec.start(); setListening(true); } catch { setListening(false); }
+  }
+
+  async function generate() {
+    if (listening) { try { recogRef.current?.stop(); } catch {} }
+    if (!chosenHook && !notes.trim()) return;
+    setGenStatus("loading"); setStage("post");
+    try {
+      const r = await fetch("/api/post-create", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ mode: "generate", hook: chosenHook, notes: notes.trim() }),
+      });
+      const d = await r.json();
+      if (d?.ok && d.post) { setPost(d.post); setGenStatus("ready"); }
+      else setGenStatus("error");
+    } catch { setGenStatus("error"); }
+  }
+
+  // Manual-first: Copy always; Open also copies, then opens LinkedIn's share
+  // composer (LinkedIn no longer prefills share text — paste is the real path).
+  function copyPost() {
+    if (!post.trim()) return;
+    copyToClipboard(post, () => onCopied?.("Post copied — paste it into LinkedIn"));
+  }
+  function openLinkedIn() {
+    if (!post.trim()) return;
+    copyToClipboard(post, () => onCopied?.("Post copied — paste it into LinkedIn"));
+    if (typeof window !== "undefined") {
+      window.open("https://www.linkedin.com/feed/?shareActive=true", "_blank", "noopener");
+    }
+  }
+
+  // The agent chat IS the refine loop: a message reworks the current draft.
+  async function sendChat(q) {
+    const text = (q || "").trim();
+    if (!text || chatBusy) return;
+    setChatMsgs(m => [...m, { role: "user", text }]);
+    setChatInput("");
+    setChatBusy(true);
+    try {
+      if (post.trim()) {
+        const r = await fetch("/api/post-create", {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ mode: "refine", post, feedback: text }),
+        });
+        const d = await r.json();
+        if (d?.ok && d.post) {
+          setPost(d.post);
+          setChatMsgs(m => [...m, { role: "assistant", text: "✓ Updated the post above." }]);
+        } else {
+          setChatMsgs(m => [...m, { role: "assistant", text: d?.error || "Couldn't update that — try rephrasing." }]);
+        }
+      } else {
+        setChatMsgs(m => [...m, { role: "assistant", text: "Pick a hook and generate a post first, then tell me how to sharpen it." }]);
+      }
+    } catch {
+      setChatMsgs(m => [...m, { role: "assistant", text: "Network error — try again." }]);
+    } finally { setChatBusy(false); }
+  }
+
+  function markDone() { setBusyFooter(true); onClose?.("done"); }
+  function skip() { onClose?.("skip"); }
+
+  return (
+    <div className="card pc-card">
+      <div className="card-scroll pc-scroll">
+        <div className="pc-hdr">
+          <span className="pc-title">✎ Create a post</span>
+          <span className="pc-sub">Pick a hook, say your bit, post it in your voice.</span>
+        </div>
+
+        {/* STEP 1 — exactly 3 hooks (Trending / ICP / Competitor) */}
+        <div className="pc-step">Step 1 · pick a hook <span className="pc-step-opt">(optional)</span></div>
+        {hooksStatus === "loading" && (
+          <div className="pc-loading"><span className="spinner spinner-sm" /> Pulling three hooks…</div>
+        )}
+        {hooksStatus === "error" && (
+          <div className="pc-error">Couldn&apos;t load hooks. <button className="pc-link" onClick={() => loadHooks(false)} type="button">Try again</button></div>
+        )}
+        {hooksStatus === "ready" && (
+          <div className="pc-hooks">
+            {hooks.map(h => (
+              <button
+                key={h.id}
+                type="button"
+                className={`pc-hook ${chosenHook?.id === h.id ? "pc-hook-active" : ""}`}
+                onClick={() => pickHook(h)}
+              >
+                <span className="pc-hook-tag">{h.tag}</span>
+                {h.line}
+              </button>
+            ))}
+            <button type="button" className="pc-justrec" onClick={skipToRecord}>Skip — just let me record →</button>
+          </div>
+        )}
+
+        {/* STEP 2 — record (voice) or type */}
+        {stage !== "hooks" && (
+          <>
+            {chosenHook && (
+              <div className="pc-chosen"><span>Your hook</span>{chosenHook.line}</div>
+            )}
+            <div className="pc-step">Step 2 · say your thoughts</div>
+            <div className="pc-compose">
+              {voiceSupported && (
+                <button type="button" className={`pc-mic ${listening ? "pc-mic-on" : ""}`} onClick={toggleVoice}>
+                  {listening ? "● Stop recording" : "🎙 Record"}
+                </button>
+              )}
+              <textarea
+                className="pc-notes"
+                placeholder={voiceSupported ? "Record or type the gist — rough is fine, I'll shape it." : "Type the gist — rough is fine, I'll shape it."}
+                value={notes}
+                rows={4}
+                onChange={(e) => setNotes(e.target.value)}
+              />
+              <button
+                type="button"
+                className="btn pc-gen"
+                onClick={generate}
+                disabled={genStatus === "loading" || (!chosenHook && !notes.trim())}
+              >
+                {genStatus === "loading" ? <><span className="spinner spinner-sm" /> Writing…</> : "Generate post →"}
+              </button>
+            </div>
+          </>
+        )}
+
+        {/* STEP 3 — generated post (editable) + char count + Copy / Open */}
+        {stage === "post" && (
+          <div className="pc-postblock">
+            {genStatus === "loading" && (
+              <div className="pc-loading"><span className="spinner spinner-sm" /> Writing it in your voice…</div>
+            )}
+            {genStatus === "error" && (
+              <div className="pc-error">Generation failed. <button className="pc-link" onClick={generate} type="button">Retry</button></div>
+            )}
+            {genStatus === "ready" && (
+              <>
+                <div className="pc-post-hdr">
+                  <span className="pc-chip">✓ Written in your voice</span>
+                  <span className="pc-cc">{post.length} chars</span>
+                </div>
+                <textarea
+                  className="pc-post-edit"
+                  value={post}
+                  rows={Math.max(5, Math.min(16, Math.ceil((post.length || 1) / 60)))}
+                  onChange={(e) => setPost(e.target.value)}
+                />
+                <div className="pc-post-row">
+                  <button className="btn" onClick={copyPost} disabled={!post.trim()} type="button">⧉ Copy</button>
+                  <button className="btn" onClick={openLinkedIn} disabled={!post.trim()} type="button">↗ Open LinkedIn</button>
+                </div>
+              </>
+            )}
+          </div>
+        )}
+
+        {/* "Talk to your agent about this task" — appends into the scroll area */}
+        <div className="pc-agent">
+          <div className="pc-agent-lbl">Talk to your agent about this task</div>
+          {chatMsgs.length > 0 && (
+            <div className="pc-agent-thread" ref={threadRef}>
+              {chatMsgs.map((m, i) => (
+                <div key={i} className={`postchat-msg postchat-msg-${m.role}`}>{m.text}</div>
+              ))}
+              {chatBusy && <div className="postchat-msg postchat-msg-assistant postchat-typing"><span className="spinner spinner-sm" /> Reworking…</div>}
+            </div>
+          )}
+          <div className="pc-agent-inputwrap">
+            <input
+              type="text"
+              className="pc-agent-input"
+              placeholder="e.g. make it punchier, less salesy, add an example…"
+              value={chatInput}
+              disabled={chatBusy}
+              onChange={(e) => setChatInput(e.target.value)}
+              onKeyDown={(e) => {
+                if (e.key === "Enter") { e.preventDefault(); e.stopPropagation(); sendChat(chatInput); }
+              }}
+              autoComplete="off"
+            />
+            <button type="button" className="pc-agent-send" disabled={chatBusy || !chatInput.trim()} onClick={() => sendChat(chatInput)} aria-label="Send">
+              {chatBusy ? <span className="spinner spinner-sm" /> : "→"}
+            </button>
+          </div>
+        </div>
+      </div>
+
+      {/* FIXED FOOTER — same 3 buttons as every card type, never changes */}
+      <div className="card-foot pc-foot">
+        <button className="btn primary" onClick={markDone} disabled={busyFooter} type="button">✓ Mark as done</button>
+        <button className="btn danger" onClick={skip} disabled={busyFooter} type="button">Skip</button>
+        <button className="btn" onClick={() => loadHooks(true)} disabled={busyFooter || hooksStatus === "loading"} type="button">↻ Regenerate hooks</button>
       </div>
     </div>
   );
