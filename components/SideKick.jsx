@@ -3941,37 +3941,48 @@ function PostCreatorCard({ onClose, onCopied }) {
           <span className="pc-sub">Pick a hook, say your bit, post it in your voice.</span>
         </div>
 
-        {/* STEP 1 — exactly 3 hooks (Trending / ICP / Competitor) */}
-        <div className="pc-step">Step 1 · pick a hook <span className="pc-step-opt">(optional)</span></div>
-        {hooksStatus === "loading" && (
-          <div className="pc-loading"><span className="spinner spinner-sm" /> Pulling three hooks…</div>
+        {/* STAGE: hooks — exactly 3 (Trending / ICP / Competitor). One thing
+            in focus: the hook list shows ONLY during selection, then collapses. */}
+        {stage === "hooks" && (
+          <>
+            <div className="pc-step">Step 1 · pick a hook <span className="pc-step-opt">(optional)</span></div>
+            {hooksStatus === "loading" && (
+              <div className="pc-loading"><span className="spinner spinner-sm" /> Pulling three hooks…</div>
+            )}
+            {hooksStatus === "error" && (
+              <div className="pc-error">Couldn&apos;t load hooks. <button className="pc-link" onClick={() => loadHooks(false)} type="button">Try again</button></div>
+            )}
+            {hooksStatus === "ready" && (
+              <div className="pc-hooks">
+                {hooks.map(h => (
+                  <button
+                    key={h.id}
+                    type="button"
+                    className={`pc-hook ${chosenHook?.id === h.id ? "pc-hook-active" : ""}`}
+                    onClick={() => pickHook(h)}
+                  >
+                    <span className="pc-hook-tag">{h.tag}</span>
+                    {h.line}
+                  </button>
+                ))}
+                <button type="button" className="pc-justrec" onClick={skipToRecord}>Skip — just let me record →</button>
+              </div>
+            )}
+          </>
         )}
-        {hooksStatus === "error" && (
-          <div className="pc-error">Couldn&apos;t load hooks. <button className="pc-link" onClick={() => loadHooks(false)} type="button">Try again</button></div>
-        )}
-        {hooksStatus === "ready" && (
-          <div className="pc-hooks">
-            {hooks.map(h => (
-              <button
-                key={h.id}
-                type="button"
-                className={`pc-hook ${chosenHook?.id === h.id ? "pc-hook-active" : ""}`}
-                onClick={() => pickHook(h)}
-              >
-                <span className="pc-hook-tag">{h.tag}</span>
-                {h.line}
-              </button>
-            ))}
-            <button type="button" className="pc-justrec" onClick={skipToRecord}>Skip — just let me record →</button>
+
+        {/* Collapsed chosen-hook recap (once past selection) + quiet "change". */}
+        {stage !== "hooks" && (
+          <div className="pc-chosen">
+            <span>{chosenHook ? "Your hook" : "No hook — writing from scratch"}</span>
+            {chosenHook ? chosenHook.line : "Just say what you want to post about."}
+            <button type="button" className="pc-quietlink" onClick={() => setStage("hooks")}>change hook</button>
           </div>
         )}
 
-        {/* STEP 2 — record (voice) or type */}
-        {stage !== "hooks" && (
+        {/* STAGE: compose — record (voice) or type, then Generate. */}
+        {stage === "compose" && (
           <>
-            {chosenHook && (
-              <div className="pc-chosen"><span>Your hook</span>{chosenHook.line}</div>
-            )}
             <div className="pc-step">Step 2 · say your thoughts</div>
             <div className="pc-compose">
               {voiceSupported && (
@@ -3998,9 +4009,11 @@ function PostCreatorCard({ onClose, onCopied }) {
           </>
         )}
 
-        {/* STEP 3 — generated post (editable) + char count + Copy / Open */}
+        {/* STAGE: post — editable post + Copy / Open + the agent chat, which
+            only appears once there is a post to actually talk about. */}
         {stage === "post" && (
           <div className="pc-postblock">
+            <button type="button" className="pc-quietlink pc-editnotes" onClick={() => setStage("compose")}>← edit what you said</button>
             {genStatus === "loading" && (
               <div className="pc-loading"><span className="spinner spinner-sm" /> Writing it in your voice…</div>
             )}
@@ -4023,40 +4036,40 @@ function PostCreatorCard({ onClose, onCopied }) {
                   <button className="btn" onClick={copyPost} disabled={!post.trim()} type="button">⧉ Copy</button>
                   <button className="btn" onClick={openLinkedIn} disabled={!post.trim()} type="button">↗ Open LinkedIn</button>
                 </div>
+
+                {/* "Talk to your agent about this task" — refines THIS post live */}
+                <div className="pc-agent">
+                  <div className="pc-agent-lbl">Talk to your agent about this task</div>
+                  {chatMsgs.length > 0 && (
+                    <div className="pc-agent-thread" ref={threadRef}>
+                      {chatMsgs.map((m, i) => (
+                        <div key={i} className={`postchat-msg postchat-msg-${m.role}`}>{m.text}</div>
+                      ))}
+                      {chatBusy && <div className="postchat-msg postchat-msg-assistant postchat-typing"><span className="spinner spinner-sm" /> Reworking…</div>}
+                    </div>
+                  )}
+                  <div className="pc-agent-inputwrap">
+                    <input
+                      type="text"
+                      className="pc-agent-input"
+                      placeholder="e.g. make it punchier, less salesy, add an example…"
+                      value={chatInput}
+                      disabled={chatBusy}
+                      onChange={(e) => setChatInput(e.target.value)}
+                      onKeyDown={(e) => {
+                        if (e.key === "Enter") { e.preventDefault(); e.stopPropagation(); sendChat(chatInput); }
+                      }}
+                      autoComplete="off"
+                    />
+                    <button type="button" className="pc-agent-send" disabled={chatBusy || !chatInput.trim()} onClick={() => sendChat(chatInput)} aria-label="Send">
+                      {chatBusy ? <span className="spinner spinner-sm" /> : "→"}
+                    </button>
+                  </div>
+                </div>
               </>
             )}
           </div>
         )}
-
-        {/* "Talk to your agent about this task" — appends into the scroll area */}
-        <div className="pc-agent">
-          <div className="pc-agent-lbl">Talk to your agent about this task</div>
-          {chatMsgs.length > 0 && (
-            <div className="pc-agent-thread" ref={threadRef}>
-              {chatMsgs.map((m, i) => (
-                <div key={i} className={`postchat-msg postchat-msg-${m.role}`}>{m.text}</div>
-              ))}
-              {chatBusy && <div className="postchat-msg postchat-msg-assistant postchat-typing"><span className="spinner spinner-sm" /> Reworking…</div>}
-            </div>
-          )}
-          <div className="pc-agent-inputwrap">
-            <input
-              type="text"
-              className="pc-agent-input"
-              placeholder="e.g. make it punchier, less salesy, add an example…"
-              value={chatInput}
-              disabled={chatBusy}
-              onChange={(e) => setChatInput(e.target.value)}
-              onKeyDown={(e) => {
-                if (e.key === "Enter") { e.preventDefault(); e.stopPropagation(); sendChat(chatInput); }
-              }}
-              autoComplete="off"
-            />
-            <button type="button" className="pc-agent-send" disabled={chatBusy || !chatInput.trim()} onClick={() => sendChat(chatInput)} aria-label="Send">
-              {chatBusy ? <span className="spinner spinner-sm" /> : "→"}
-            </button>
-          </div>
-        </div>
       </div>
 
       {/* FIXED FOOTER — same 3 buttons as every card type, never changes */}

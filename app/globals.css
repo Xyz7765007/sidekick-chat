@@ -2380,6 +2380,13 @@ body { position: relative; }
   display: block; font-size: 10.5px; font-weight: 700; color: var(--text-2);
   text-transform: uppercase; letter-spacing: .5px; margin-bottom: 4px;
 }
+.pc-quietlink {
+  background: none; border: none; font: inherit; font-size: 11px;
+  color: var(--text-3); cursor: pointer; text-decoration: underline; padding: 0;
+}
+.pc-quietlink:hover { color: var(--text-2); }
+.pc-chosen .pc-quietlink { margin-left: 10px; }
+.pc-editnotes { display: block; margin: 0 0 12px; }
 
 .pc-compose { display: flex; flex-direction: column; gap: 10px; }
 .pc-mic {
