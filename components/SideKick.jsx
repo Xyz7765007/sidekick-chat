@@ -3484,20 +3484,10 @@ function LinkedInCommentCard({
           <SkipReason onConfirm={submitSkip} onCancel={() => setSkipping(false)} disabled={isDisabled} />
         ) : (
         <div className="card-actions-primary">
-          {/* Kunal Jun12 strip: the one CTA on the card — opens the post so the
-              operator comments on LinkedIn directly. */}
-          {!showCommentAssist && (
-            <button
-              className="btn primary"
-              disabled={isDisabled || !postUrl}
-              onClick={openOnLinkedInToComment}
-              type="button"
-              title={postUrl ? "Open this post on LinkedIn to comment" : "No post link available"}
-            >
-              ↗ Comment on LinkedIn
-            </button>
-          )}
-          <button className={`btn ${showCommentAssist ? "primary" : ""}`} disabled={isDisabled} onClick={() => onAction(card.id, "done")}>
+          {/* Samarth 2026-06-30: dropped the "Comment on LinkedIn" CTA — Mark
+              Done is the single orange primary. The post is still reachable via
+              the "↗ Open on LinkedIn" link in the card body above. */}
+          <button className="btn primary" disabled={isDisabled} onClick={() => onAction(card.id, "done")}>
             ✓ Mark Done
           </button>
           <button
