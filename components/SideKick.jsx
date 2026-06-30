@@ -3053,6 +3053,59 @@ function LinkedInCommentCard({
   const fullPostText = rawPostText || stripInternalSignal(formatSignalText(card.signal));
   const hasFullPost = !!fullPostText;
 
+  // ─── Ask / feedback chat (Kunal 2026-06-30 consistent card grammar) ──
+  // The input is pinned in the sticky footer (.fbrow); replies append into
+  // the scroll area (.fb-thread). Same /api/post-chat backing as before —
+  // just relocated into the shared card chrome. Replaces the inline PostChat.
+  const [askMsgs, setAskMsgs] = useState([]);
+  const [askInput, setAskInput] = useState("");
+  const [askBusy, setAskBusy] = useState(false);
+  const askThreadRef = useRef(null);
+  useEffect(() => { setAskMsgs([]); setAskInput(""); setAskBusy(false); }, [card.id]);
+  useEffect(() => {
+    if (askThreadRef.current) askThreadRef.current.scrollTop = askThreadRef.current.scrollHeight;
+  }, [askMsgs, askBusy]);
+  async function sendAsk(q) {
+    const text = (q || "").trim();
+    if (!text || askBusy) return;
+    setAskMsgs((m) => [...m, { role: "user", text }]);
+    setAskInput("");
+    setAskBusy(true);
+    try {
+      const r = await fetch("/api/post-chat", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          message: text,
+          post: rawPostText,
+          author: postAuthorLine(card),
+          history: askMsgs.slice(-6),
+          leadContext: { score: card.score, signal: card.signal, task_rule: card.task_rule, task_type: card.task_type },
+        }),
+      });
+      const d = await r.json();
+      setAskMsgs((m) => [...m, { role: "assistant", text: d?.ok ? d.reply : (d?.error || "Couldn't answer that.") }]);
+      if (d?.ok && d.feedback?.text) {
+        fetch("/api/feedback", {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({
+            item_type: "task_feedback",
+            feedback_text: d.feedback.text,
+            quoted_span: rawPostText.slice(0, 280),
+            lead_name: card.lead_name || "",
+            lead_company: card.company || "",
+          }),
+        }).catch(() => {});
+        onFeedbackSubmitted?.();
+      }
+    } catch {
+      setAskMsgs((m) => [...m, { role: "assistant", text: "Network error — try again." }]);
+    } finally {
+      setAskBusy(false);
+    }
+  }
+
   // ─── Skip-feedback prompt (Kunal Jun16) ─────────────────────────
   // Clicking Skip opens a tiny "why?" prompt instead of skipping straight
   // away. One-tap reason chips (or a typed note) log to /api/feedback so
@@ -3230,7 +3283,8 @@ function LinkedInCommentCard({
   const connector = getConnector(card);
 
   return (
-    <div className={`card card-stack li-comment-card ${leaving ? "leaving" : "entering"}`}>
+    <div className={`card card-stack li-comment-card sk-card ${leaving ? "leaving" : "entering"}`}>
+      <div className="card-scroll">
       <div className="card-header">
         <span className={`card-type card-type-${connector.tone}`}>
           <span className="card-type-icon">{connector.icon}</span>
@@ -3292,13 +3346,8 @@ function LinkedInCommentCard({
             ) : (
               <div className="li-post-error">This post’s text isn’t stored — open it on LinkedIn to read and comment.</div>
             )}
-            {postUrl && (
-              <div className="li-post-actions">
-                <a className="li-view-post" href={postUrl} target="_blank" rel="noopener noreferrer">
-                  ↗ Open on LinkedIn
-                </a>
-              </div>
-            )}
+            {/* Open on LinkedIn moved into the sticky footer CTAs (consistent
+                card grammar, Kunal 2026-06-30) — removed here to avoid redundancy. */}
           </>
         )}
         {showSummary && status === "loading" && (
@@ -3367,14 +3416,8 @@ function LinkedInCommentCard({
         )}
       </div>
 
-      {/* Kunal Jun16: per-post context chatbot. Collapsed by default (one
-          quiet line) so it never competes with the focused card; expands to
-          a tiny inline chat scoped ONLY to this post — "simplify this for
-          me", "who is this". Backed by /api/post-chat. */}
-      {FEATURES.postContextChat && rawPostText && (
-        <PostChat post={rawPostText} author={postAuthorLine(card)} cardId={card.id} leadName={card.lead_name} leadCompany={card.company}
-          leadContext={{ score: card.score, signal: card.signal, task_rule: card.task_rule, task_type: card.task_type }} />
-      )}
+      {/* Per-post ask/feedback chat relocated into the sticky footer (input)
+          + the scroll thread below (Kunal 2026-06-30 consistent card grammar). */}
 
       {/* Angle chips */}
       {showCommentAssist && status === "ready" && angles.length > 0 && (
@@ -3476,65 +3519,50 @@ function LinkedInCommentCard({
         </div>
       )}
 
-      {/* Actions: Comment-on-LinkedIn CTA (stripped) + Mark Done / Skip */}
-      <div className="card-actions-row">
-        {/* Kunal Jun16: when skipping, swap the buttons for a tiny "why?"
-            prompt (keeps the card single-focus). Cancel returns to actions. */}
+        {/* Ask/feedback conversation — appends into the scroll area (never
+            pinned), exactly like the post-creation card's thread. */}
+        {askMsgs.length > 0 && (
+          <div className="fb-thread" ref={askThreadRef}>
+            {askMsgs.map((m, i) => (
+              <div key={i} className={`fb-bub fb-bub-${m.role}`}>{m.text}</div>
+            ))}
+            {askBusy && <div className="fb-bub fb-bub-assistant"><span className="spinner spinner-sm" /> Thinking…</div>}
+          </div>
+        )}
+      </div>{/* /.card-scroll */}
+
+      {/* ── Sticky footer: the CONSISTENT card grammar (Kunal 2026-06-30) ──
+          Same on every card type: the ask/feedback text box + the CTAs. */}
+      <div className="card-foot">
         {skipping ? (
           <SkipReason onConfirm={submitSkip} onCancel={() => setSkipping(false)} disabled={isDisabled} />
         ) : (
-        <div className="card-actions-primary">
-          {/* Samarth 2026-06-30: dropped the "Comment on LinkedIn" CTA — Mark
-              Done is the single orange primary. The post is still reachable via
-              the "↗ Open on LinkedIn" link in the card body above. */}
-          <button className="btn primary" disabled={isDisabled} onClick={() => onAction(card.id, "done")}>
-            ✓ Mark Done
-          </button>
-          <button
-            className="btn danger"
-            disabled={isDisabled}
-            onClick={() => (FEATURES.skipReason ? setSkipping(true) : onAction(card.id, "skip"))}
-          >
-            Skip
-          </button>
-          {showCommentAssist && onNotNeeded && (
-            <button
-              className="btn quiet card-not-needed"
-              disabled={isDisabled}
-              onClick={() => onNotNeeded(card)}
-              title="Not needed — skip this task and move on"
-              type="button"
-            >
-              Not needed
-            </button>
-          )}
-        </div>
-        )}
-        {/* Focus-chat button only when chat is enabled. */}
-        {FEATURES.chat && (
-          <div className="card-actions-secondary">
-            {onSetFocus && (card.lead_name || card.company) && (
-              <button
-                className={`card-icon-btn ${isFocused ? "card-icon-btn-active" : ""}`}
-                onClick={() => onSetFocus(isFocused ? null : card)}
-                title={isFocused ? "Stop focusing chat on this lead" : "Focus chat on this lead"}
-                type="button"
-              >{isFocused ? "🎯" : "💬"}</button>
-            )}
-          </div>
+          <>
+            <div className="fbrow">
+              <input
+                type="text"
+                className="fbrow-input"
+                placeholder="Ask about this task, or give feedback…"
+                value={askInput}
+                disabled={askBusy}
+                onChange={(e) => setAskInput(e.target.value)}
+                onKeyDown={(e) => { if (e.key === "Enter") { e.preventDefault(); e.stopPropagation(); sendAsk(askInput); } }}
+                autoComplete="off"
+              />
+              <button type="button" className="fb-send" onClick={() => sendAsk(askInput)} disabled={askBusy || !askInput.trim()} aria-label="Send">
+                {askBusy ? <span className="spinner spinner-sm" /> : "→"}
+              </button>
+            </div>
+            <div className="actions">
+              <button className="btn primary" disabled={isDisabled} onClick={() => onAction(card.id, "done")}>✓ Mark Done</button>
+              {postUrl && (
+                <a className="btn btn-secondary" href={postUrl} target="_blank" rel="noopener noreferrer">↗ Open on LinkedIn</a>
+              )}
+              <button className="btn btn-ghost" disabled={isDisabled} onClick={() => (FEATURES.skipReason ? setSkipping(true) : onAction(card.id, "skip"))}>Skip</button>
+            </div>
+          </>
         )}
       </div>
-
-      {/* Keyboard hint box — REMOVED per Kunal Jun16 ("get rid of the box at
-          the bottom"). Gated off, not deleted: flip `false` to bring it back. */}
-      {false && (
-        <div className="card-kbd-hint" aria-hidden="true">
-          <span className="kb-key">↵</span> done · <span className="kb-key">S</span> skip · <span className="kb-key">U</span> undo
-          {showCommentAssist && status === "ready" && angles.length > 0 && (
-            <> · <span className="kb-key">1</span><span className="kb-key">2</span><span className="kb-key">3</span> angle</>
-          )}
-        </div>
-      )}
     </div>
   );
 }
