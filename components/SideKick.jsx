@@ -3397,11 +3397,9 @@ function LinkedInCommentCard({
                 {showFullPost ? "↑ Hide full post" : "↓ Read full post here"}
               </button>
             )}
-            {postUrl && (
-              <a className="li-view-post" href={postUrl} target="_blank" rel="noopener noreferrer">
-                ↗ Open on LinkedIn
-              </a>
-            )}
+            {/* Open on LinkedIn lives in the sticky footer CTAs now — removed
+                here too (Kunal redundancy: one "open" per card). The "Read full
+                post here" toggle stays (stay-in-app, not redundant). */}
           </div>
         )}
         {showSummary && showFullPost && hasFullPost && (
