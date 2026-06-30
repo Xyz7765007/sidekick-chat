@@ -3792,43 +3792,42 @@ function PostChat({ post, author, cardId, leadName, leadCompany, leadContext }) 
 // Regenerate hooks. Orange is reserved for Mark as done only (Kunal: "make
 // it gray, not orange" — every other surface here is neutral).
 // ═══════════════════════════════════════════════════════════════════
-function PostCreatorCard({ onClose, onCopied }) {
-  const [stage, setStage] = useState("hooks");            // hooks | compose | post
+function PostCreatorCard({ onCopied }) {
+  // Faithful port of the approved mockup's create-a-post STAGE MACHINE:
+  //   pick → record → generating → post. Each stage replaces the card
+  //   (card-enter animation), one focused screen at a time — not a long
+  //   accumulating scroll. Real hooks/voice/generation/refine under it.
+  const [stage, setStage] = useState("pick");          // pick | record | generating | post
+  const [recordMode, setRecordMode] = useState("voice"); // voice | type
   const [hooks, setHooks] = useState([]);
   const [hooksStatus, setHooksStatus] = useState("loading"); // loading | ready | error
   const [chosenHook, setChosenHook] = useState(null);
   const [notes, setNotes] = useState("");
   const [post, setPost] = useState("");
-  const [genStatus, setGenStatus] = useState("idle");     // idle | loading | ready | error
-  const [busyFooter, setBusyFooter] = useState(false);
-  const seenHooksRef = useRef([]);                         // lines already shown → regenerate "avoid"
+  const [genStatus, setGenStatus] = useState("idle");  // loading | ready | error (used in generating)
+  const seenHooksRef = useRef([]);
 
   // ── voice: browser-native Web Speech API (no new dep; Chrome/Edge) ──
   const [listening, setListening] = useState(false);
   const [voiceSupported, setVoiceSupported] = useState(false);
   const recogRef = useRef(null);
   const notesBaseRef = useRef("");
+  const pendingGenRef = useRef(false);
 
-  // ── agent chat ("Talk to your agent about this task") ──
-  const [chatMsgs, setChatMsgs] = useState([]);
-  const [chatInput, setChatInput] = useState("");
-  const [chatBusy, setChatBusy] = useState(false);
-  const threadRef = useRef(null);
+  // ── refine ("tweak it") ──
+  const [refineInput, setRefineInput] = useState("");
+  const [refineBusy, setRefineBusy] = useState(false);
 
-  // First 3 hooks on mount; detect voice support; stop mic on unmount.
   useEffect(() => { loadHooks(false); /* eslint-disable-next-line react-hooks/exhaustive-deps */ }, []);
   useEffect(() => {
     const SR = typeof window !== "undefined" && (window.SpeechRecognition || window.webkitSpeechRecognition);
     setVoiceSupported(!!SR);
+    if (!SR) setRecordMode("type");
     return () => { try { recogRef.current?.stop(); } catch {} };
   }, []);
-  useEffect(() => {
-    if (threadRef.current) threadRef.current.scrollTop = threadRef.current.scrollHeight;
-  }, [chatMsgs, chatBusy]);
 
   async function loadHooks(regenerate) {
     setHooksStatus("loading");
-    if (regenerate) { setChosenHook(null); setPost(""); setStage("hooks"); setGenStatus("idle"); }
     try {
       const r = await fetch("/api/post-create", {
         method: "POST",
@@ -3844,14 +3843,17 @@ function PostCreatorCard({ onClose, onCopied }) {
     } catch { setHooksStatus("error"); }
   }
 
-  function pickHook(h) { setChosenHook(h); setStage("compose"); }
-  function skipToRecord() { setChosenHook(null); setStage("compose"); }
+  function enterRecord(hook) {
+    setChosenHook(hook);
+    setNotes("");
+    setRecordMode(voiceSupported ? "voice" : "type");
+    setStage("record");
+  }
 
-  // Web Speech API: toggle dictation. Final results append to a base buffer;
-  // interim text is shown live. Rough transcript → the generate step shapes it.
-  function toggleVoice() {
-    if (!voiceSupported) return;
-    if (listening) { try { recogRef.current?.stop(); } catch {} return; }
+  // Web Speech API. Tap mic → listen; tap again → stop and shape it into a post
+  // (matches the mockup: "Tap and just talk … tap again when you're done").
+  function startVoice() {
+    if (!voiceSupported || listening) return;
     const SR = window.SpeechRecognition || window.webkitSpeechRecognition;
     const rec = new SR();
     rec.lang = "en-US"; rec.continuous = true; rec.interimResults = true;
@@ -3866,15 +3868,18 @@ function PostCreatorCard({ onClose, onCopied }) {
       setNotes((notesBaseRef.current + interim).slice(0, 4000));
     };
     rec.onerror = () => setListening(false);
-    rec.onend = () => setListening(false);
+    rec.onend = () => { setListening(false); if (pendingGenRef.current) { pendingGenRef.current = false; goGenerate(); } };
     recogRef.current = rec;
     try { rec.start(); setListening(true); } catch { setListening(false); }
   }
+  function stopVoiceAndGen() {
+    pendingGenRef.current = true;
+    try { recogRef.current?.stop(); } catch { pendingGenRef.current = false; goGenerate(); }
+  }
 
-  async function generate() {
-    if (listening) { try { recogRef.current?.stop(); } catch {} }
+  async function goGenerate() {
     if (!chosenHook && !notes.trim()) return;
-    setGenStatus("loading"); setStage("post");
+    setGenStatus("loading"); setStage("generating");
     try {
       const r = await fetch("/api/post-create", {
         method: "POST",
@@ -3882,18 +3887,14 @@ function PostCreatorCard({ onClose, onCopied }) {
         body: JSON.stringify({ mode: "generate", hook: chosenHook, notes: notes.trim() }),
       });
       const d = await r.json();
-      if (d?.ok && d.post) { setPost(d.post); setGenStatus("ready"); }
+      if (d?.ok && d.post) { setPost(d.post); setGenStatus("ready"); setStage("post"); }
       else setGenStatus("error");
     } catch { setGenStatus("error"); }
   }
 
-  // Manual-first: Copy always; Open also copies, then opens LinkedIn's share
-  // composer (LinkedIn no longer prefills share text — paste is the real path).
-  function copyPost() {
-    if (!post.trim()) return;
-    copyToClipboard(post, () => onCopied?.("Post copied — paste it into LinkedIn"));
-  }
-  function openLinkedIn() {
+  // Manual-first: copy the post, then open LinkedIn's composer (LinkedIn no
+  // longer prefills share text — the copy is the real delivery). Never auto-posts.
+  function copyAndOpen() {
     if (!post.trim()) return;
     copyToClipboard(post, () => onCopied?.("Post copied — paste it into LinkedIn"));
     if (typeof window !== "undefined") {
@@ -3901,183 +3902,162 @@ function PostCreatorCard({ onClose, onCopied }) {
     }
   }
 
-  // The agent chat IS the refine loop: a message reworks the current draft.
-  async function sendChat(q) {
-    const text = (q || "").trim();
-    if (!text || chatBusy) return;
-    setChatMsgs(m => [...m, { role: "user", text }]);
-    setChatInput("");
-    setChatBusy(true);
+  // The footer "tweak it" input reworks the post in place (stays user-editable).
+  async function refine() {
+    const v = refineInput.trim();
+    if (!v || refineBusy || !post.trim()) return;
+    setRefineInput(""); setRefineBusy(true);
     try {
-      if (post.trim()) {
-        const r = await fetch("/api/post-create", {
-          method: "POST",
-          headers: { "Content-Type": "application/json" },
-          body: JSON.stringify({ mode: "refine", post, feedback: text }),
-        });
-        const d = await r.json();
-        if (d?.ok && d.post) {
-          setPost(d.post);
-          setChatMsgs(m => [...m, { role: "assistant", text: "✓ Updated the post above." }]);
-        } else {
-          setChatMsgs(m => [...m, { role: "assistant", text: d?.error || "Couldn't update that — try rephrasing." }]);
-        }
-      } else {
-        setChatMsgs(m => [...m, { role: "assistant", text: "Pick a hook and generate a post first, then tell me how to sharpen it." }]);
-      }
-    } catch {
-      setChatMsgs(m => [...m, { role: "assistant", text: "Network error — try again." }]);
-    } finally { setChatBusy(false); }
+      const r = await fetch("/api/post-create", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ mode: "refine", post, feedback: v }),
+      });
+      const d = await r.json();
+      if (d?.ok && d.post) setPost(d.post);
+    } catch { /* leave the post as-is on a failed tweak */ }
+    finally { setRefineBusy(false); }
   }
 
-  function markDone() { setBusyFooter(true); onClose?.("done"); }
-  function skip() { onClose?.("skip"); }
+  function tryAnotherHook() {
+    setPost(""); setNotes(""); setChosenHook(null); setGenStatus("idle");
+    setRecordMode(voiceSupported ? "voice" : "type");
+    setStage("pick");
+  }
+
+  const Badge = () => (
+    <div className="pc-badge"><span className="pc-badge-dot" />Create · LinkedIn post</div>
+  );
+  const ChosenHook = () => chosenHook ? (
+    <div className="pc-chosen"><span>Your hook</span>{chosenHook.line}</div>
+  ) : null;
 
   return (
     <div className="card pc-card">
-      <div className="card-scroll pc-scroll">
-        <div className="pc-hdr">
-          <span className="pc-title">✎ Create a post</span>
-          <span className="pc-sub">Pick a hook, say your bit, post it in your voice.</span>
-        </div>
-
-        {/* STAGE: hooks — exactly 3 (Trending / ICP / Competitor). One thing
-            in focus: the hook list shows ONLY during selection, then collapses. */}
-        {stage === "hooks" && (
-          <>
+      {/* ── STAGE: pick a hook ── */}
+      {stage === "pick" && (
+        <div className="pc-stage card-enter" key="pick">
+          <div className="pc-scroll">
+            <Badge />
+            <div className="pc-title">What do you want to post about?</div>
+            <div className="pc-body">Pick a hook to start, or just hit record. A hook is a one-line seed so you&apos;re never staring at a blank page.</div>
             <div className="pc-step">Step 1 · pick a hook <span className="pc-step-opt">(optional)</span></div>
             {hooksStatus === "loading" && (
-              <div className="pc-loading"><span className="spinner spinner-sm" /> Pulling three hooks…</div>
+              <div className="pc-genwait"><span className="spinner" /> Pulling your hooks…</div>
             )}
             {hooksStatus === "error" && (
-              <div className="pc-error">Couldn&apos;t load hooks. <button className="pc-link" onClick={() => loadHooks(false)} type="button">Try again</button></div>
+              <div className="pc-err">Couldn&apos;t load hooks. <button className="pc-textlink" onClick={() => loadHooks(false)} type="button">Try again</button></div>
             )}
             {hooksStatus === "ready" && (
-              <div className="pc-hooks">
-                {hooks.map(h => (
-                  <button
-                    key={h.id}
-                    type="button"
-                    className={`pc-hook ${chosenHook?.id === h.id ? "pc-hook-active" : ""}`}
-                    onClick={() => pickHook(h)}
-                  >
-                    <span className="pc-hook-tag">{h.tag}</span>
-                    {h.line}
-                  </button>
-                ))}
-                <button type="button" className="pc-justrec" onClick={skipToRecord}>Skip — just let me record →</button>
-              </div>
-            )}
-          </>
-        )}
-
-        {/* Collapsed chosen-hook recap (once past selection) + quiet "change". */}
-        {stage !== "hooks" && (
-          <div className="pc-chosen">
-            <span>{chosenHook ? "Your hook" : "No hook — writing from scratch"}</span>
-            {chosenHook ? chosenHook.line : "Just say what you want to post about."}
-            <button type="button" className="pc-quietlink" onClick={() => setStage("hooks")}>change hook</button>
-          </div>
-        )}
-
-        {/* STAGE: compose — record (voice) or type, then Generate. */}
-        {stage === "compose" && (
-          <>
-            <div className="pc-step">Step 2 · say your thoughts</div>
-            <div className="pc-compose">
-              {voiceSupported && (
-                <button type="button" className={`pc-mic ${listening ? "pc-mic-on" : ""}`} onClick={toggleVoice}>
-                  {listening ? "● Stop recording" : "🎙 Record"}
-                </button>
-              )}
-              <textarea
-                className="pc-notes"
-                placeholder={voiceSupported ? "Record or type the gist — rough is fine, I'll shape it." : "Type the gist — rough is fine, I'll shape it."}
-                value={notes}
-                rows={4}
-                onChange={(e) => setNotes(e.target.value)}
-              />
-              <button
-                type="button"
-                className="btn pc-gen"
-                onClick={generate}
-                disabled={genStatus === "loading" || (!chosenHook && !notes.trim())}
-              >
-                {genStatus === "loading" ? <><span className="spinner spinner-sm" /> Writing…</> : "Generate post →"}
-              </button>
-            </div>
-          </>
-        )}
-
-        {/* STAGE: post — editable post + Copy / Open + the agent chat, which
-            only appears once there is a post to actually talk about. */}
-        {stage === "post" && (
-          <div className="pc-postblock">
-            <button type="button" className="pc-quietlink pc-editnotes" onClick={() => setStage("compose")}>← edit what you said</button>
-            {genStatus === "loading" && (
-              <div className="pc-loading"><span className="spinner spinner-sm" /> Writing it in your voice…</div>
-            )}
-            {genStatus === "error" && (
-              <div className="pc-error">Generation failed. <button className="pc-link" onClick={generate} type="button">Retry</button></div>
-            )}
-            {genStatus === "ready" && (
               <>
-                <div className="pc-post-hdr">
-                  <span className="pc-chip">✓ Written in your voice</span>
-                  <span className="pc-cc">{post.length} chars</span>
-                </div>
-                <textarea
-                  className="pc-post-edit"
-                  value={post}
-                  rows={Math.max(5, Math.min(16, Math.ceil((post.length || 1) / 60)))}
-                  onChange={(e) => setPost(e.target.value)}
-                />
-                <div className="pc-post-row">
-                  <button className="btn" onClick={copyPost} disabled={!post.trim()} type="button">⧉ Copy</button>
-                  <button className="btn" onClick={openLinkedIn} disabled={!post.trim()} type="button">↗ Open LinkedIn</button>
-                </div>
-
-                {/* "Talk to your agent about this task" — refines THIS post live */}
-                <div className="pc-agent">
-                  <div className="pc-agent-lbl">Talk to your agent about this task</div>
-                  {chatMsgs.length > 0 && (
-                    <div className="pc-agent-thread" ref={threadRef}>
-                      {chatMsgs.map((m, i) => (
-                        <div key={i} className={`postchat-msg postchat-msg-${m.role}`}>{m.text}</div>
-                      ))}
-                      {chatBusy && <div className="postchat-msg postchat-msg-assistant postchat-typing"><span className="spinner spinner-sm" /> Reworking…</div>}
-                    </div>
-                  )}
-                  <div className="pc-agent-inputwrap">
-                    <input
-                      type="text"
-                      className="pc-agent-input"
-                      placeholder="e.g. make it punchier, less salesy, add an example…"
-                      value={chatInput}
-                      disabled={chatBusy}
-                      onChange={(e) => setChatInput(e.target.value)}
-                      onKeyDown={(e) => {
-                        if (e.key === "Enter") { e.preventDefault(); e.stopPropagation(); sendChat(chatInput); }
-                      }}
-                      autoComplete="off"
-                    />
-                    <button type="button" className="pc-agent-send" disabled={chatBusy || !chatInput.trim()} onClick={() => sendChat(chatInput)} aria-label="Send">
-                      {chatBusy ? <span className="spinner spinner-sm" /> : "→"}
+                <div className="pc-grouplbl">Suggested from your signals</div>
+                <div className="pc-hooks">
+                  {hooks.map(h => (
+                    <button key={h.id} type="button" className="pc-hook sig" onClick={() => enterRecord(h)}>
+                      <span className="pc-htag">{h.tag}</span>
+                      {h.line}
                     </button>
-                  </div>
+                  ))}
                 </div>
+                <button type="button" className="pc-reghooks" onClick={() => loadHooks(true)}>↻ show me different hooks</button>
               </>
             )}
+            <button type="button" className="pc-skiprec" onClick={() => enterRecord(null)}>Skip — just let me record →</button>
           </div>
-        )}
-      </div>
+        </div>
+      )}
 
-      {/* FIXED FOOTER — same 3 buttons as every card type, never changes */}
-      <div className="card-foot pc-foot">
-        <button className="btn primary" onClick={markDone} disabled={busyFooter} type="button">✓ Mark as done</button>
-        <button className="btn danger" onClick={skip} disabled={busyFooter} type="button">Skip</button>
-        <button className="btn" onClick={() => loadHooks(true)} disabled={busyFooter || hooksStatus === "loading"} type="button">↻ Regenerate hooks</button>
-      </div>
+      {/* ── STAGE: record (voice) or type ── */}
+      {stage === "record" && (
+        <div className="pc-stage card-enter" key="record">
+          <div className="pc-scroll">
+            <Badge />
+            <ChosenHook />
+            <div className="pc-step">Step 2 · record your thoughts</div>
+            {recordMode === "voice" && voiceSupported ? (
+              <div className="pc-recz">
+                <button type="button" className={`pc-recbtn ${listening ? "live" : ""}`} onClick={() => (listening ? stopVoiceAndGen() : startVoice())}>🎙️</button>
+                <div className="pc-rechint">
+                  {listening ? "Listening… tap again when you're done." : "Tap and just talk. Ramble is fine, we'll shape it into your voice."}
+                </div>
+                {!!notes.trim() && <div className="pc-livetxt">{notes}</div>}
+                <div className="pc-recor">prefer typing? <a onClick={() => setRecordMode("type")}>write it out instead</a></div>
+              </div>
+            ) : (
+              <div className="pc-typez">
+                <textarea
+                  className="pc-typearea"
+                  placeholder="Type the gist — rough is fine, we'll shape it into your voice."
+                  value={notes}
+                  onChange={(e) => setNotes(e.target.value)}
+                  autoFocus
+                />
+                <button type="button" className="pc-btn pc-btn-primary" onClick={goGenerate} disabled={!chosenHook && !notes.trim()}>Shape it into a post →</button>
+                {voiceSupported && <div className="pc-recor"><a onClick={() => setRecordMode("voice")}>← record instead</a></div>}
+              </div>
+            )}
+          </div>
+          <div className="pc-foot">
+            <div className="pc-actions">
+              <button type="button" className="pc-btn pc-btn-ghost" onClick={() => setStage("pick")}>← back to hooks</button>
+            </div>
+          </div>
+        </div>
+      )}
+
+      {/* ── STAGE: generating ── */}
+      {stage === "generating" && (
+        <div className="pc-stage card-enter" key="generating">
+          <div className="pc-scroll">
+            <Badge />
+            <ChosenHook />
+            {!!notes.trim() && <div className="pc-transcript">“{notes.trim()}”</div>}
+            <div className="pc-step">Step 3 · your post</div>
+            {genStatus === "error" ? (
+              <div className="pc-err">
+                Couldn&apos;t write the post. <button className="pc-textlink" onClick={goGenerate} type="button">Try again</button>
+                <button className="pc-textlink" onClick={() => setStage("record")} type="button" style={{ marginLeft: 10 }}>← back</button>
+              </div>
+            ) : (
+              <div className="pc-genwait"><span className="spinner" />&nbsp; Writing it in your voice…</div>
+            )}
+          </div>
+        </div>
+      )}
+
+      {/* ── STAGE: your post — edit + refine + copy/open ── */}
+      {stage === "post" && (
+        <div className="pc-stage card-enter" key="post">
+          <div className="pc-scroll">
+            <Badge />
+            <div className="pc-step">Step 3 · your post — edit anything</div>
+            <span className="pc-humanchip">✓ Written in your voice</span>
+            <textarea className="pc-postedit" value={post} onChange={(e) => setPost(e.target.value)} />
+            <div className="pc-charnote">{refineBusy ? "reworking in your voice…" : `${post.length} characters`}</div>
+          </div>
+          <div className="pc-foot">
+            <div className="pc-fbrow">
+              <input
+                type="text"
+                className="pc-fbinput"
+                placeholder="Tweak it — shorter, punchier, add a stat…"
+                value={refineInput}
+                disabled={refineBusy}
+                onChange={(e) => setRefineInput(e.target.value)}
+                onKeyDown={(e) => { if (e.key === "Enter") { e.preventDefault(); e.stopPropagation(); refine(); } }}
+                autoComplete="off"
+              />
+              <button type="button" className="pc-fbsend" onClick={refine} disabled={refineBusy || !refineInput.trim()} aria-label="Send">
+                {refineBusy ? <span className="spinner spinner-sm" /> : "→"}
+              </button>
+            </div>
+            <div className="pc-actions">
+              <button type="button" className="pc-btn pc-btn-primary" onClick={copyAndOpen} disabled={!post.trim()}>Copy &amp; open LinkedIn ↗</button>
+              <button type="button" className="pc-btn pc-btn-secondary" onClick={tryAnotherHook}>Try another hook</button>
+            </div>
+          </div>
+        </div>
+      )}
     </div>
   );
 }
