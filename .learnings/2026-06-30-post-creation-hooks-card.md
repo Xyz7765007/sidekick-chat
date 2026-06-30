@@ -45,8 +45,32 @@ less-is-more bar:
 - The agent chat renders only once a post exists (no premature surface).
 - "← edit what you said" quiet link back to compose.
 Verified live with a headless Chrome click-through (puppeteer-core in scratch,
-no repo dep): header button present; 3 hooks tagged Trending/ICP/Competitor;
-footer is exactly Mark-as-done/Skip/Regenerate-hooks; computed colors show
-Mark-as-done is the ONLY orange (bg rgb(224,123,58)), Skip + Regenerate white;
-pick collapses hooks→chosen recap; Generate yields an in-voice post (798 chars)
-with Copy/Open + the agent chat appearing. Commit `7bbaf58`.
+no repo dep). Commit `7bbaf58`.
+
+## CORRECTION — rebuilt to the mockup's flow (same day, commit `58a1a13`)
+Samarth: "cross refer the mockup, the flow is so smooth … the current flow is
+messed up." My single accumulating-scroll card (hooks → compose → post stacked
+in one scroll, fixed Mark-done/Skip/Regenerate footer, gray accents) was a
+reinterpretation, NOT the approved mockup. **Lesson: for the create-post card,
+port `sidekick-ui-mockups-demo/index.html` `screenCreatePost()` faithfully — do
+not reinterpret.**
+Rebuilt `PostCreatorCard` as the mockup's STAGE MACHINE — one focused screen at
+a time, each replacing the card with a card-enter animation:
+- **pick** — badge "Create · LinkedIn post", title "What do you want to post
+  about?", "Suggested from your signals" + 3 tagged hooks, "↻ show me different
+  hooks", "Skip — just let me record →". No footer.
+- **record** — orange "Your hook" recap, big 84px tactile mic (pulses red when
+  live), "Tap and just talk…", "prefer typing? write it out instead" (→ textarea
+  + "Shape it into a post →"). Footer: "← back to hooks".
+- **generating** — hook recap + italic transcript + "Writing it in your voice…".
+- **post** — "Step 3 · your post — edit anything", "✓ Written in your voice"
+  chip, orange-bordered editable post + char count. Footer: refine input
+  ("Tweak it — shorter, punchier, add a stat…") + "Copy & open LinkedIn ↗"
+  (primary) + "Try another hook".
+**Orange is RESTORED to match the mockup** (hook recap, mic, post border,
+primary CTA) — the earlier gray treatment + the generic Mark-done/Skip/Regen
+footer were dropped for the create-post card. Real hooks/voice(Web Speech)/
+generate/refine wired under it. Re-verified live headless: pick(title+group+3
+tags+regen+skiprec, no footer) → record(orange hook, 84x84 mic, type link, back-
+to-hooks) → type → generating → post(1014 chars, human chip, orange post border,
+refine input, "Copy & open LinkedIn ↗" + "Try another hook", primary orange).
