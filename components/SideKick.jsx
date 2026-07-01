@@ -706,6 +706,24 @@ const TILE_CREATE = {
   icon: '<path d="M15.6 4.6 19.4 8.4 9 18.8l-4.2.8.8-4.2 10-10.8Z"/><path d="M14.2 6 18 9.8"/>',
 };
 
+// The 5 DM/connection Unipile task types (DM reply, connection accepted, DM
+// reaction, post reaction on yours, profile view). Hidden from BOTH the queue
+// and the switcher when FEATURES.dmsConnections is off (Kunal Jul01). NOTE:
+// unipile_post_comment_on_yours is deliberately NOT here — it's a COMMENT and
+// stays visible.
+const DM_CONNECTION_TASK_TYPES = new Set([
+  "unipile_message_reply",
+  "unipile_connection_accepted",
+  "unipile_message_reaction",
+  "unipile_post_reaction_on_yours",
+  "unipile_profile_view",
+]);
+// isDmConnectionCard — true iff this card is a hidden-while-flag-off DM/connection
+// signal. The single predicate the queue AND the switcher both consult.
+function isDmConnectionCard(card) {
+  return DM_CONNECTION_TASK_TYPES.has(card && card.task_type);
+}
+
 // queueEligibleCards — the cards the queue can ACTUALLY render under the current
 // FEATURES config with NO family filter applied (the "All" set). This is the
 // SAME feature-strip the orderedQueue memo applies (see ~L1498): when otherCards
@@ -714,13 +732,22 @@ const TILE_CREATE = {
 // — tapping it would filter the stripped queue to empty and dead-end the operator
 // into a FALSE "All clear" (ux: Nielsen #5 error-prevention / #1 system-status).
 // When otherCards is on, every card is queue-eligible (tiles span all families).
+// When dmsConnections is off, the 5 DM/connection Unipile signals are ALSO
+// stripped here (in BOTH otherCards modes) so neither the queue nor a switcher
+// tile can surface them (Kunal Jul01) — comments (unipile_post_comment_on_yours)
+// stay.
 function queueEligibleCards(cards) {
-  if (FEATURES.otherCards) return cards;
-  return cards.filter(
-    (c) =>
-      c.task_type === "linkedin_engagement" ||
-      (c.task_type || "").startsWith("unipile_")
-  );
+  let eligible = FEATURES.otherCards
+    ? cards
+    : cards.filter(
+        (c) =>
+          c.task_type === "linkedin_engagement" ||
+          (c.task_type || "").startsWith("unipile_")
+      );
+  if (!FEATURES.dmsConnections) {
+    eligible = eligible.filter((c) => !isDmConnectionCard(c));
+  }
+  return eligible;
 }
 // deriveTiles — compute the visible tile set from the queue-eligible cards (NOT
 // the raw feed). Only families with ≥1 renderable card appear (dynamic), so the
@@ -1116,7 +1143,15 @@ export default function SideKick() {
       // Badge counts what the stripped queue shows: LinkedIn-post tasks + ALL
       // Unipile outreach-sequence signals. "unipile_" is a substring match on the
       // backend (FIND), so it covers every unipile_* type in one clause.
-      const countQS = FEATURES.otherCards ? "" : "?taskType=linkedin_engagement,unipile_";
+      // dmsConnections OFF (Kunal Jul01): the 5 DM/connection unipile types are
+      // hidden, so DON'T fetch every unipile_* — fetch only comment tasks
+      // (linkedin_engagement + unipile_post_comment_on_yours, both COMMENTS) so
+      // the DM/connection cards never enter the feed or the count.
+      const countQS = FEATURES.otherCards
+        ? ""
+        : FEATURES.dmsConnections
+          ? "?taskType=linkedin_engagement,unipile_"
+          : "?taskType=linkedin_engagement,unipile_post_comment_on_yours";
       const [r, rc] = await Promise.all([
         fetch(`/api/feed?limit=${FEED_LIMIT}`, { cache: "no-store" }),
         fetch(`/api/count${countQS}`, { cache: "no-store" }).catch(() => null),
@@ -1135,9 +1170,11 @@ export default function SideKick() {
               reopenedRef.current.delete(id); // feed caught up
             } else {
               feedCards = [card, ...feedCards.filter((c) => c.id !== id)];
-              // Count it toward the badge only if it's in the badge's scope.
-              if (FEATURES.otherCards || card.task_type === "linkedin_engagement" ||
-                  (card.task_type || "").startsWith("unipile_")) {
+              // Count it toward the badge only if it's in the badge's scope —
+              // i.e. it's a card the queue actually renders under the current
+              // FEATURES config (excludes hidden DM/connection cards when
+              // dmsConnections is off). Same predicate queueEligibleCards uses.
+              if (queueEligibleCards([card]).length > 0) {
                 forcedExtra++;
               }
             }
@@ -1479,9 +1516,14 @@ export default function SideKick() {
     //    source cards to that family FIRST — the whole sort/priority/batch
     //    engine below is reused unchanged, it just operates on the subset.
     //    queueFilter === null ("All") keeps the full unfiltered queue.
+    //    First strip anything the current FEATURES config can't render
+    //    (queueEligibleCards) so hidden DM/connection cards (dmsConnections off,
+    //    Kunal Jul01) never reach the rendered queue even if one slips through
+    //    the feed fetch (e.g. an optimistically-reopened card).
+    const renderable = queueEligibleCards(cards);
     const allCards = queueFilter
-      ? cards.filter((c) => tileMatch(c, queueFilter))
-      : [...cards];
+      ? renderable.filter((c) => tileMatch(c, queueFilter))
+      : [...renderable];
     const movements   = allCards.filter(c => c.task_type === "lead_movement");
     const topLeads    = allCards.filter(c => c.task_type === "top_x");
     const liComments  = allCards.filter(c => c.task_type === "linkedin_engagement");
@@ -2096,7 +2138,20 @@ Best,
               progress centered, action buttons right. */}
           <div className="hdr-c">
             <HeaderQueue
-              pending={count + (FEATURES.connectionFlow && autoBatches.some(b => (b.leads || []).length > 0) ? 1 : 0)}
+              // Visibility of system status (Nielsen #1): the badge must match
+              // the section in view. "All" (queueFilter === null) → the accurate
+              // GLOBAL server total from /api/count (now excludes hidden
+              // DM/connection tasks via the scoped countQS, Kunal Jul01). A
+              // filtered section → the length of the ALREADY-FILTERED rendered
+              // queue (orderedQueue), i.e. EXACTLY what's on screen, so the count
+              // can never disagree with the filtered view. Caveat: /api/feed is
+              // capped at FEED_LIMIT, so a filtered count reflects the loaded page
+              // (fine here — the filtered feed is well under the cap).
+              pending={
+                queueFilter
+                  ? orderedQueue.length
+                  : count + (FEATURES.connectionFlow && autoBatches.some(b => (b.leads || []).length > 0) ? 1 : 0)
+              }
               done={sessionDone}
               loading={loading || !!fetchError}
             />
