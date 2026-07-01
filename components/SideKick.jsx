@@ -631,6 +631,119 @@ function getConnector(card) {
   return { icon: "•", label: card.source || "Task", tone: "default" };
 }
 
+// ─── Task-switcher tiles (Kunal Jun30, ported from the approved mock) ───
+// A tile-per-task-family filter row. The tiles are DYNAMIC: a family tile only
+// renders when the live feed actually contains a card of that family (Samarth:
+// "only the relevant task blocks show; if more add, only then the block should
+// be present"). "All" is always first + default; "Create post" is always last
+// (it's a capability, not feed data). Icons are inline SVG so the 3-dependency
+// rule holds — no icon library. They inherit currentColor, so the active
+// accent-tint recolors them. `match(task_type)` decides which family a card is.
+//
+// task_type → family mapping mirrors getConnector's taxonomy:
+//   linkedin_engagement            → comments  ("a post you comment on == a
+//                                                comment", Kunal — label it
+//                                                "LinkedIn comments")
+//   unipile_post_comment_on_yours  → comments  (a comment on your post)
+//   lead_movement / top_x / …      → their own families, surfaced only if present
+const SWITCHER_FAMILIES = [
+  {
+    key: "comments",
+    label: "LinkedIn comments",
+    icon: '<path d="M20 12.4c0 3.7-3.36 6.6-7.5 6.6-.86 0-1.69-.12-2.46-.35L4.5 20.25l1.06-3.2A6.27 6.27 0 0 1 4.5 12.4C4.5 8.7 7.86 5.8 12 5.8s8 2.9 8 6.6Z"/>',
+    match: (t) => t === "linkedin_engagement" || t === "unipile_post_comment_on_yours",
+  },
+  {
+    key: "movement",
+    label: "Movement",
+    icon: '<path d="M4.5 9.5 8 6v2.5h9M19.5 14.5 16 18v-2.5H7"/>',
+    match: (t) => t === "lead_movement",
+  },
+  {
+    key: "top",
+    label: "Top leads",
+    icon: '<path d="m12 4.5 2.06 4.36 4.69.62-3.44 3.26.9 4.76L12 15.7l-4.21 2.06.9-4.76L5.25 9.7l4.69-.62L12 4.5Z"/>',
+    match: (t) => t === "top_x",
+  },
+  {
+    key: "visits",
+    label: "Site visits",
+    icon: '<circle cx="12" cy="12" r="7.5"/><path d="M4.5 12h15M12 4.5c2 2.3 3 4.9 3 7.5s-1 5.2-3 7.5c-2-2.3-3-4.9-3-7.5s1-5.2 3-7.5Z"/>',
+    match: (t) => t === "engagement",
+  },
+  {
+    key: "dms",
+    label: "DMs & connections",
+    icon: '<rect x="3.75" y="5.75" width="16.5" height="12.5" rx="3"/><path d="m4.5 7.5 7.5 5 7.5-5"/>',
+    match: (t) =>
+      t === "unipile_message_reply" ||
+      t === "unipile_connection_accepted" ||
+      t === "unipile_message_reaction" ||
+      t === "unipile_post_reaction_on_yours" ||
+      t === "unipile_profile_view",
+  },
+  {
+    key: "news",
+    label: "News",
+    icon: '<path d="M5.25 5.5h10.5a1.25 1.25 0 0 1 1.25 1.25v10.5a2 2 0 0 1-2 2H6.5a2 2 0 0 1-2-2V5.5Z"/><path d="M17 9.5h1.5a1.25 1.25 0 0 1 1.25 1.25v6a1.25 1.25 0 0 1-2.5 0M7.75 9h6M7.75 12.25h6M7.75 15.5h3.5"/>',
+    match: (t, card) => {
+      if (["linkedin_engagement", "lead_movement", "top_x", "engagement"].includes(t)) return false;
+      if ((t || "").startsWith("unipile_")) return false;
+      const hint = `${(card && card.source) || ""} ${(card && card.task_rule) || ""}`.toLowerCase();
+      return /news/.test(hint);
+    },
+  },
+];
+// The always-present, non-data-driven tiles.
+const TILE_ALL = {
+  key: "all",
+  label: "All",
+  icon: '<circle cx="6.25" cy="6.25" r="2.75"/><circle cx="17.75" cy="6.25" r="2.75"/><circle cx="6.25" cy="17.75" r="2.75"/><circle cx="17.75" cy="17.75" r="2.75"/>',
+};
+const TILE_CREATE = {
+  key: "createpost",
+  label: "Create post",
+  icon: '<path d="M15.6 4.6 19.4 8.4 9 18.8l-4.2.8.8-4.2 10-10.8Z"/><path d="M14.2 6 18 9.8"/>',
+};
+
+// queueEligibleCards — the cards the queue can ACTUALLY render under the current
+// FEATURES config with NO family filter applied (the "All" set). This is the
+// SAME feature-strip the orderedQueue memo applies (see ~L1498): when otherCards
+// is off the queue keeps ONLY Unipile signals + LinkedIn-comment tasks, so a tile
+// must never be offered for a family (movement/top/GA/news) the queue can't show
+// — tapping it would filter the stripped queue to empty and dead-end the operator
+// into a FALSE "All clear" (ux: Nielsen #5 error-prevention / #1 system-status).
+// When otherCards is on, every card is queue-eligible (tiles span all families).
+function queueEligibleCards(cards) {
+  if (FEATURES.otherCards) return cards;
+  return cards.filter(
+    (c) =>
+      c.task_type === "linkedin_engagement" ||
+      (c.task_type || "").startsWith("unipile_")
+  );
+}
+// deriveTiles — compute the visible tile set from the queue-eligible cards (NOT
+// the raw feed). Only families with ≥1 renderable card appear (dynamic), so the
+// switcher can never offer a family the queue can't render. All first; Create
+// post last (a capability, only when the feature is on). For the current live
+// feed (comment tasks only, otherCards off) this yields exactly:
+// All · LinkedIn comments · Create post.
+function deriveTiles(cards, includeCreate) {
+  const eligible = queueEligibleCards(cards);
+  const present = SWITCHER_FAMILIES.filter((fam) =>
+    eligible.some((c) => fam.match(c.task_type, c))
+  );
+  const tiles = [TILE_ALL, ...present];
+  if (includeCreate) tiles.push(TILE_CREATE);
+  return tiles;
+}
+// tileMatch — does a card belong to the given (non-"all", non-"createpost")
+// filter key? Consumed by orderedQueue to filter the visible queue.
+function tileMatch(card, filterKey) {
+  const fam = SWITCHER_FAMILIES.find((f) => f.key === filterKey);
+  return fam ? fam.match(card.task_type, card) : true;
+}
+
 // stripInternalSignal — for the in-app "full post" view on a LinkedIn comment
 // card (Kunal item 16: don't leave the app). The raw `signal` interleaves the
 // public post text (🔗/📝/💬 markers) with INTERNAL scoring (📊 score, 📋 rule
@@ -855,6 +968,9 @@ export default function SideKick() {
   const [handledOpen, setHandledOpen] = useState(false);
   // Post-creation "hooks engine" overlay (Kunal Jun30) — gated on FEATURES.postCreate.
   const [postCreateOpen, setPostCreateOpen] = useState(false);
+  // Task-switcher active filter (Kunal Jun30). null = "All" (unfiltered queue).
+  // Otherwise a tile key ("comments", etc.) → queue filtered to that task family.
+  const [queueFilter, setQueueFilter] = useState(null);
   const [handledList, setHandledList] = useState({ status: "idle", items: [] });
   const lastHandledRef = useRef(null); // last task id actioned this session
   // ─── Reopen/undo optimism (instant UI, no manual refresh) ──────────
@@ -1359,7 +1475,13 @@ export default function SideKick() {
   // it's a ref read, not reactive state.)
   const orderedQueue = useMemo(() => {
     // 1. Task cards, priority-sorted (movements → top → comments → ga → other).
-    const allCards = [...cards];
+    //    Task-switcher (Kunal Jun30): when a family tile is active, filter the
+    //    source cards to that family FIRST — the whole sort/priority/batch
+    //    engine below is reused unchanged, it just operates on the subset.
+    //    queueFilter === null ("All") keeps the full unfiltered queue.
+    const allCards = queueFilter
+      ? cards.filter((c) => tileMatch(c, queueFilter))
+      : [...cards];
     const movements   = allCards.filter(c => c.task_type === "lead_movement");
     const topLeads    = allCards.filter(c => c.task_type === "top_x");
     const liComments  = allCards.filter(c => c.task_type === "linkedin_engagement");
@@ -1439,7 +1561,7 @@ export default function SideKick() {
       ...steps.filter(s => !deferredSet.has(s.key)),
       ...deferred.map(k => steps.find(s => s.key === k)).filter(Boolean),
     ];
-  }, [cards, autoBatches, deferred]);
+  }, [cards, autoBatches, deferred, queueFilter]);
 
   // ─── Eager top + single next-step prefetch (item 8) ─────────────
   // item 8 (Kunal Jun12): EXACTLY ONE post is loaded eagerly — the focused
@@ -2016,6 +2138,50 @@ Best,
             )}
           </div>
         </header>
+
+        {/* ─── Task-switcher tile row (Kunal Jun30, ported from approved mock) ─
+            Dynamic tiles: All + one tile per task family PRESENT in the live
+            feed + Create post (capability). Filters the queue by task type; the
+            focused-card queue below stays one-at-a-time (less-is-more). Hidden
+            while there are no tiles beyond "All" and Create post is off (nothing
+            to switch between) and while loading/errored. */}
+        {!loading && !fetchError && (() => {
+          const tiles = deriveTiles(cards, FEATURES.postCreate);
+          // Only "All" (+ maybe Create post) → nothing to switch; hide the row.
+          const hasFamilies = tiles.some(t => t.key !== "all" && t.key !== "createpost");
+          if (!hasFamilies) return null;
+          const activeKey = postCreateOpen ? "createpost" : (queueFilter || "all");
+          const selectTile = (key) => {
+            if (key === "createpost") { setPostCreateOpen(true); return; }
+            setPostCreateOpen(false);
+            setQueueFilter(key === "all" ? null : key);
+            stickyTopIdRef.current = null; // refocus the top of the filtered queue
+          };
+          return (
+            <div className="switchwrap">
+              <div className="switchrow" role="tablist" aria-label="Filter tasks by type">
+                {tiles.map(t => (
+                  <button
+                    key={t.key}
+                    type="button"
+                    role="tab"
+                    aria-selected={activeKey === t.key}
+                    className={`tile ${activeKey === t.key ? "on" : ""}`}
+                    onClick={() => selectTile(t.key)}
+                    title={t.label}
+                  >
+                    <span className="tile-ic">
+                      <svg viewBox="0 0 24 24" fill="none" stroke="currentColor"
+                        strokeWidth="1.6" strokeLinecap="round" strokeLinejoin="round"
+                        dangerouslySetInnerHTML={{ __html: t.icon }} />
+                    </span>
+                    <span className="tile-lbl">{t.label}</span>
+                  </button>
+                ))}
+              </div>
+            </div>
+          );
+        })()}
 
         <ScanBanner status={scanStatus} concurrentRunsCount={scanConcurrentCount} />
 
