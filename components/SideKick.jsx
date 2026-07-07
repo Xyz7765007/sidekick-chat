@@ -984,8 +984,17 @@ export default function SideKick() {
   // One-at-a-time queue (2026-06-11): every surface is a STEP in a single
   // queue — the daily batch is a step like any task card, so exactly one
   // thing is ever in focus. "Later" defers a step to the back of the queue
-  // for this session. Step keys: "batch" | card.id.
+  // for this session. Step keys: "batch" | "connections" | card.id.
   const [deferred, setDeferred] = useState([]);
+
+  // ─── Connection-requests-sent digest (Kunal 2026-07-07) ─────────
+  // { count, past24h, leads:[{name,title,company,linkedin}], lastMarkedDone }
+  // or null. Polled alongside the feed. The card only enters the queue when
+  // FEATURES.connectionsSent is on AND past24h >= 5 (the visibility gate).
+  const [connData, setConnData] = useState(null);
+  // Session-only "remind me later" — hides the connections card without resetting
+  // the count (only Mark as done resets). Reappears on reload / next session.
+  const [connDismissed, setConnDismissed] = useState(false);
 
   // ─── Handled history (revisit actioned tasks — 2026-06-11) ─────
   // Done/Skip stamps Handled At server-side; "reopen" clears it so the
@@ -1201,6 +1210,77 @@ export default function SideKick() {
     }
   }, []);
 
+  // ─── Fetch connection-requests-sent digest ─────────────────────
+  // Best-effort — a failure just leaves the card hidden (connData null), never
+  // blocks the feed. Gated on FEATURES.connectionsSent so it doesn't even hit
+  // the network when the feature is off.
+  const fetchConnections = useCallback(async () => {
+    if (!FEATURES.connectionsSent) return;
+    try {
+      const r = await fetch("/api/connections-sent", { cache: "no-store" });
+      const d = await r.json().catch(() => null);
+      if (d && d.ok) setConnData(d);
+    } catch {
+      /* non-fatal — card stays hidden until the next poll succeeds */
+    }
+  }, []);
+
+  // Mark the connections card done → resets the count server-side. Optimistic:
+  // hide the card immediately, then confirm + offer Undo (restores the previous
+  // marked-done timestamp so the same requests resurface).
+  async function markConnectionsDone() {
+    const prev = connData;
+    setConnData((c) => (c ? { ...c, past24h: 0 } : c)); // gate falls → card leaves
+    try {
+      const r = await fetch("/api/connections-sent", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ action: "mark_done" }),
+      });
+      const d = await r.json().catch(() => ({}));
+      if (d && d.ok) {
+        stickyTopIdRef.current = null;
+        showToast("Marked done — count reset", 4000, {
+          label: "Undo",
+          onUndo: async () => {
+            // Restore the previous marked-done timestamp so the card returns.
+            try {
+              await fetch("/api/connections-sent", {
+                method: "POST",
+                headers: { "Content-Type": "application/json" },
+                body: JSON.stringify({ action: "mark_done", at: prev?.lastMarkedDone || new Date(0).toISOString() }),
+              });
+            } catch { /* best-effort */ }
+            await fetchConnections();
+          },
+        });
+        fetchConnections();
+      } else {
+        setConnData(prev); // revert the optimistic hide
+        showToast(`Error: ${(d && d.error) || "Couldn't mark done"}`, 4000);
+      }
+    } catch (e) {
+      setConnData(prev);
+      showToast(`Network error: ${e.message}`, 4000);
+    }
+  }
+
+  // Flag a wrong lead from the feedback box → Outreach Status="excluded" on the
+  // Leads table (best-effort). Returns the server result so the card can echo
+  // the right reply bubble.
+  async function excludeConnLead({ leadName, linkedin }) {
+    try {
+      const r = await fetch("/api/connections-sent", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ action: "exclude_lead", leadName, linkedin }),
+      });
+      return await r.json().catch(() => ({ ok: false }));
+    } catch {
+      return { ok: false };
+    }
+  }
+
   // ─── Load chat history on mount ─────────────────────────────────
   const loadHistory = useCallback(async () => {
     try {
@@ -1260,13 +1340,15 @@ export default function SideKick() {
   useEffect(() => {
     fetchFeed();
     fetchAutoBatches();
+    fetchConnections();
     loadHistory();
     const i = setInterval(() => {
       fetchFeed();
       fetchAutoBatches();
+      fetchConnections();
     }, POLL_INTERVAL_MS);
     return () => clearInterval(i);
-  }, [fetchFeed, fetchAutoBatches, loadHistory]);
+  }, [fetchFeed, fetchAutoBatches, fetchConnections, loadHistory]);
 
   // ─── Movement scan status polling ───────────────────────────────
   // Polls every 20s when running (active progress); 60s when idle.
@@ -1597,13 +1679,22 @@ export default function SideKick() {
     if (mergedBatch) steps.push({ key: "batch", batch: mergedBatch });
     for (const c of sortedStack) steps.push({ key: c.id, card: c });
 
+    // Connection-requests-sent digest — ONE card at the END of the queue
+    // (actionable task cards keep priority; the finalized card-spec orders the
+    // review/digest surfaces last). Only in the unfiltered "All" view (it's a
+    // digest, not a task family, so it never appears under a switcher filter),
+    // and only when the visibility gate passes (>=5 sent in the past 24h).
+    if (FEATURES.connectionsSent && !queueFilter && !connDismissed && connData && connData.past24h >= 5) {
+      steps.push({ key: "connections", conn: connData });
+    }
+
     // 4. Deferred steps sink to the back, in the order they were deferred.
     const deferredSet = new Set(deferred);
     return [
       ...steps.filter(s => !deferredSet.has(s.key)),
       ...deferred.map(k => steps.find(s => s.key === k)).filter(Boolean),
     ];
-  }, [cards, autoBatches, deferred, queueFilter]);
+  }, [cards, autoBatches, deferred, queueFilter, connData, connDismissed]);
 
   // ─── Eager top + single next-step prefetch (item 8) ─────────────
   // item 8 (Kunal Jun12): EXACTLY ONE post is loaded eagerly — the focused
@@ -2348,6 +2439,14 @@ Best,
                   editingDraft={editingDraft}
                   setEditingDraft={setEditingDraft}
                   onFeedbackSubmitted={handleFeedbackSubmitted}
+                />
+              ) : topStep.key === "connections" ? (
+                <ConnectionsSentCard
+                  key="connections-sent"
+                  conn={topStep.conn}
+                  onMarkDone={markConnectionsDone}
+                  onDefer={() => setConnDismissed(true)}
+                  onExcludeLead={excludeConnLead}
                 />
               ) : (
                 <SwipeCard key={`swipe-${topCard.id}`} cardId={topCard.id} onAction={handleAction}>
@@ -3781,6 +3880,149 @@ function LinkedInCommentCard({
             </div>
           </>
         )}
+      </div>
+    </div>
+  );
+}
+
+// ═══════════════════════════════════════════════════════════════════
+// CONNECTIONS-SENT CARD  (Kunal 2026-07-07)
+// A single digest step in the queue. Ported from the approved mockup
+// (sidekick-ui-mockups-demo/connection-requests-sent.html) into the app's
+// native card grammar: shared .sk-card chrome (scroll area + sticky footer),
+// the DM-Serif count headline, and an inner-scroll list (only the list
+// scrolls — the headline + CTA stay put). ONE orange CTA ("Mark as done",
+// resets the count); the feedback box flags a wrong lead → excluded.
+// Public facts only (name, title, company, LinkedIn) — no internal signal.
+// ═══════════════════════════════════════════════════════════════════
+function ConnectionsSentCard({ conn, onMarkDone, onDefer, onExcludeLead }) {
+  const count = conn?.count || 0;
+  const leads = Array.isArray(conn?.leads) ? conn.leads : [];
+  const more = Math.max(0, count - leads.length);
+  const word = count === 1 ? "connection request has gone out" : "connection requests have gone out";
+
+  const [busy, setBusy] = useState(false);
+  const [fbInput, setFbInput] = useState("");
+  const [fbMsgs, setFbMsgs] = useState([]);
+  const [fbBusy, setFbBusy] = useState(false);
+  const threadRef = useRef(null);
+  useEffect(() => {
+    if (threadRef.current) threadRef.current.scrollTop = threadRef.current.scrollHeight;
+  }, [fbMsgs, fbBusy]);
+
+  async function markDone() {
+    if (busy) return;
+    setBusy(true);
+    await onMarkDone(); // parent hides the card on success (component unmounts)
+    setBusy(false);
+  }
+
+  async function sendFeedback(text) {
+    const v = (text || "").trim();
+    if (!v || fbBusy) return;
+    setFbInput("");
+    setFbMsgs((m) => [...m, { role: "user", text: v }]);
+    setFbBusy(true);
+    // Map free text → a lead in the list (case-insensitive name mention).
+    const lower = v.toLowerCase();
+    const named = leads.find((l) => l.name && lower.includes(l.name.toLowerCase()));
+    let reply;
+    if (named) {
+      const res = await onExcludeLead({ leadName: named.name, linkedin: named.linkedin });
+      reply = res && res.excluded
+        ? `Got it — dropped ${named.name}, and told the ranking to stop surfacing them for future outreach.`
+        : `Got it — noted ${named.name} as off. I'll keep them out of future picks.`;
+    } else {
+      reply = "Got it — noted. Tell me the person's name and I'll drop them from this list and future outreach.";
+    }
+    setFbMsgs((m) => [...m, { role: "assistant", text: reply }]);
+    setFbBusy(false);
+  }
+
+  return (
+    <div className="card card-stack sk-card entering">
+      <div className="card-scroll">
+        <div className="card-header">
+          <span className="card-type card-type-movement">Connection requests · sent</span>
+        </div>
+
+        {/* Headline count — the number reads at a glance (DM-Serif), the label stays quiet. */}
+        <div className="conn-count">
+          <span className="conn-num">{count}</span>
+          <span className="conn-word">{word}</span>
+        </div>
+        <div className="conn-sub">
+          Sent on your behalf since you last marked this done. Flag anyone who's off in the box below.
+        </div>
+
+        {/* Inner-scroll window — only the list scrolls (fixed height), so the
+            headline + CTA never move. */}
+        <div className="conn-window">
+          <div className="conn-winhead">
+            <span className="conn-winhead-t">Sent requests</span>
+          </div>
+          <div className="conn-scroll">
+            <div className="conn-list">
+              {leads.map((l, i) => (
+                <div className="conn-row" key={i}>
+                  <div className="conn-name">
+                    {l.linkedin
+                      ? <a href={l.linkedin} target="_blank" rel="noopener noreferrer">{l.name || "Unknown"}</a>
+                      : (l.name || "Unknown")}
+                  </div>
+                  {(l.title || l.company) && (
+                    <div className="conn-rowsub">
+                      {l.title}{l.title && l.company ? " · " : ""}{l.company}
+                    </div>
+                  )}
+                </div>
+              ))}
+            </div>
+          </div>
+          {more > 0 && (
+            <div className="conn-more">+ {more} more sent</div>
+          )}
+        </div>
+
+        {/* Feedback thread appends into the scroll area (never pinned). */}
+        {fbMsgs.length > 0 && (
+          <div className="fb-thread" ref={threadRef}>
+            {fbMsgs.map((m, i) => (
+              <div key={i} className={`fb-bub fb-bub-${m.role}`}>{m.text}</div>
+            ))}
+            {fbBusy && <div className="fb-bub fb-bub-assistant"><span className="spinner spinner-sm" /> …</div>}
+          </div>
+        )}
+      </div>
+
+      {/* Sticky footer — same grammar as every card: feedback box + ONE CTA. */}
+      <div className="card-foot">
+        <div className="fbrow">
+          <input
+            type="text"
+            className="fbrow-input"
+            placeholder="Someone off? Tell me who and I'll drop them"
+            value={fbInput}
+            disabled={fbBusy}
+            onChange={(e) => setFbInput(e.target.value)}
+            onKeyDown={(e) => { if (e.key === "Enter") { e.preventDefault(); e.stopPropagation(); sendFeedback(fbInput); } }}
+            autoComplete="off"
+          />
+          <button type="button" className="fb-send" onClick={() => sendFeedback(fbInput)} disabled={fbBusy || !fbInput.trim()} aria-label="Send">
+            {fbBusy ? <span className="spinner spinner-sm" /> : "→"}
+          </button>
+        </div>
+        <div className="actions">
+          <button className="btn primary" disabled={busy} onClick={markDone}>
+            {busy ? <><span className="spinner spinner-sm" /> Marking…</> : "✓ Mark as done"}
+          </button>
+          {/* Secondary defer — matches every card's footer grammar. Hides the card
+              for this session WITHOUT resetting the count (Mark as done is the only
+              thing that resets). Kunal: "the bottom stays the same." */}
+          <button className="btn btn-ghost" disabled={busy} onClick={() => onDefer && onDefer()}>
+            Skip · remind me later
+          </button>
+        </div>
       </div>
     </div>
   );
