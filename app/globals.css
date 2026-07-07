@@ -452,48 +452,52 @@ body { position: relative; }
    active state) maps directly. Inactive ink is --text-2 (legible); the
    active tile is --accent-bg fill + --accent border + --accent-dark ink
    (never the solid CTA orange, which stays reserved for the card's primary). */
-.switchwrap { display: flex; justify-content: center; padding: 16px 16px 6px; }
+/* Filter chips — YouTube-style: text-only pills, horizontal scroll, one filled
+   when active. No icons. Active is solid dark (orange stays reserved for the CTA;
+   mirrors YouTube's inverted "All"). Inactive is a subtle warm fill. */
+.switchwrap { display: flex; justify-content: flex-start; padding: 14px 16px 6px; }
 .switchrow {
   display: flex;
   gap: 8px;
   max-width: 540px;
   width: 100%;
   overflow-x: auto;
-  overflow-y: visible;
-  padding: 2px;
+  overflow-y: hidden;
+  padding: 2px 2px 4px;
   scrollbar-width: none;
   -webkit-overflow-scrolling: touch;
-  justify-content: center;
+  justify-content: flex-start;
 }
 .switchrow::-webkit-scrollbar { display: none; }
 .tile {
   flex: 0 0 auto;
-  min-width: 66px;
-  display: flex;
-  flex-direction: column;
+  display: inline-flex;
   align-items: center;
   justify-content: center;
-  gap: 7px;
-  padding: 11px 12px;
-  background: var(--card);
-  border: 1px solid var(--border);
-  border-radius: var(--r-sm);
+  padding: 8px 15px;
+  background: var(--border);
+  border: 1px solid transparent;
+  border-radius: 999px;
   cursor: pointer;
   font-family: inherit;
+  font-size: 13px;
+  font-weight: 600;
+  line-height: 1;
+  letter-spacing: .005em;
   color: var(--text-2);
+  white-space: nowrap;
   -webkit-tap-highlight-color: transparent;
-  transition: color .16s ease, background-color .16s ease, border-color .16s ease, transform .16s cubic-bezier(.2,.8,.3,1);
+  transition: color .16s ease, background-color .16s ease, border-color .16s ease, transform .12s ease;
 }
-.tile:hover { border-color: var(--border-2); color: var(--text); }
+.tile:hover { background: var(--border-2); color: var(--text); }
 .tile:active { transform: scale(.97); }
-.tile-ic { display: flex; align-items: center; justify-content: center; }
-.tile-ic svg { width: 20px; height: 20px; display: block; stroke-width: 1.6; }
-.tile-lbl { font-size: 11.5px; font-weight: 600; line-height: 1; text-align: center; letter-spacing: .01em; white-space: nowrap; }
-.tile.on { color: var(--accent-dark); background: var(--accent-bg); border-color: var(--accent); }
+.tile-lbl { display: inline; }
+.tile.on { background: var(--text); color: #fff; border-color: var(--text); }
+.tile.on:hover { background: var(--text); color: #fff; }
 @media (max-width: 560px) {
-  .switchwrap { padding: 13px 10px 4px; }
-  .switchrow { justify-content: flex-start; gap: 7px; }
-  .tile { min-width: 62px; padding: 10px 10px; }
+  .switchwrap { padding: 12px 10px 4px; }
+  .switchrow { gap: 7px; }
+  .tile { padding: 7px 13px; font-size: 12.5px; }
 }
 
 .task-stack {

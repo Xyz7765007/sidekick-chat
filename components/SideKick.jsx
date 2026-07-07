@@ -2331,11 +2331,6 @@ Best,
                     onClick={() => selectTile(t.key)}
                     title={t.label}
                   >
-                    <span className="tile-ic">
-                      <svg viewBox="0 0 24 24" fill="none" stroke="currentColor"
-                        strokeWidth="1.6" strokeLinecap="round" strokeLinejoin="round"
-                        dangerouslySetInnerHTML={{ __html: t.icon }} />
-                    </span>
                     <span className="tile-lbl">{t.label}</span>
                   </button>
                 ))}
