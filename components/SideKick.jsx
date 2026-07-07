@@ -705,6 +705,14 @@ const TILE_CREATE = {
   label: "Create post",
   icon: '<path d="M15.6 4.6 19.4 8.4 9 18.8l-4.2.8.8-4.2 10-10.8Z"/><path d="M14.2 6 18 9.8"/>',
 };
+// Connections-sent review tile (Kunal 07 Jul). Dynamic: only appears when the
+// connections card is available (past24h >= 5), so tapping it always lands on a
+// real card, never a dead-end. Paper-plane = "requests sent".
+const TILE_CONNECTIONS = {
+  key: "connections",
+  label: "Connections",
+  icon: '<path d="M21.5 3.5 2.8 10.3a.5.5 0 0 0 .05.95l6.35 2.05 2.05 6.35a.5.5 0 0 0 .95.05L21.5 3.5Z"/><path d="M21.5 3.5 9.2 13.3"/>',
+};
 
 // The 5 DM/connection Unipile task types (DM reply, connection accepted, DM
 // reaction, post reaction on yours, profile view). Hidden from BOTH the queue
@@ -755,12 +763,13 @@ function queueEligibleCards(cards) {
 // post last (a capability, only when the feature is on). For the current live
 // feed (comment tasks only, otherCards off) this yields exactly:
 // All · LinkedIn comments · Create post.
-function deriveTiles(cards, includeCreate) {
+function deriveTiles(cards, includeCreate, hasConnections) {
   const eligible = queueEligibleCards(cards);
   const present = SWITCHER_FAMILIES.filter((fam) =>
     eligible.some((c) => fam.match(c.task_type, c))
   );
   const tiles = [TILE_ALL, ...present];
+  if (hasConnections) tiles.push(TILE_CONNECTIONS);
   if (includeCreate) tiles.push(TILE_CREATE);
   return tiles;
 }
@@ -1231,6 +1240,7 @@ export default function SideKick() {
   async function markConnectionsDone() {
     const prev = connData;
     setConnData((c) => (c ? { ...c, past24h: 0 } : c)); // gate falls → card leaves
+    setQueueFilter((f) => (f === "connections" ? null : f)); // don't strand on an empty filter
     try {
       const r = await fetch("/api/connections-sent", {
         method: "POST",
@@ -1603,7 +1613,11 @@ export default function SideKick() {
     //    Kunal Jul01) never reach the rendered queue even if one slips through
     //    the feed fetch (e.g. an optimistically-reopened card).
     const renderable = queueEligibleCards(cards);
-    const allCards = queueFilter
+    // "connections" is a virtual family (a single digest card, not feed tasks) —
+    // its filter shows ONLY the connections card, so strip all task cards here.
+    const allCards = queueFilter === "connections"
+      ? []
+      : queueFilter
       ? renderable.filter((c) => tileMatch(c, queueFilter))
       : [...renderable];
     const movements   = allCards.filter(c => c.task_type === "lead_movement");
@@ -1684,7 +1698,7 @@ export default function SideKick() {
     // review/digest surfaces last). Only in the unfiltered "All" view (it's a
     // digest, not a task family, so it never appears under a switcher filter),
     // and only when the visibility gate passes (>=5 sent in the past 24h).
-    if (FEATURES.connectionsSent && !queueFilter && !connDismissed && connData && connData.past24h >= 5) {
+    if (FEATURES.connectionsSent && (queueFilter === null || queueFilter === "connections") && !connDismissed && connData && connData.past24h >= 5) {
       steps.push({ key: "connections", conn: connData });
     }
 
@@ -2292,7 +2306,8 @@ Best,
             while there are no tiles beyond "All" and Create post is off (nothing
             to switch between) and while loading/errored. */}
         {!loading && !fetchError && (() => {
-          const tiles = deriveTiles(cards, FEATURES.postCreate);
+          const hasConnections = FEATURES.connectionsSent && !connDismissed && connData && connData.past24h >= 5;
+          const tiles = deriveTiles(cards, FEATURES.postCreate, hasConnections);
           // Only "All" (+ maybe Create post) → nothing to switch; hide the row.
           const hasFamilies = tiles.some(t => t.key !== "all" && t.key !== "createpost");
           if (!hasFamilies) return null;
@@ -2445,7 +2460,7 @@ Best,
                   key="connections-sent"
                   conn={topStep.conn}
                   onMarkDone={markConnectionsDone}
-                  onDefer={() => setConnDismissed(true)}
+                  onDefer={() => { setConnDismissed(true); setQueueFilter((f) => (f === "connections" ? null : f)); }}
                   onExcludeLead={excludeConnLead}
                 />
               ) : (
