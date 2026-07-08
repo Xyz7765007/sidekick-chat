@@ -771,15 +771,22 @@ function queueEligibleCards(cards) {
   return eligible;
 }
 // deriveTiles — compute the visible tile set from the queue-eligible cards (NOT
-// the raw feed). Only families with ≥1 renderable card appear (dynamic), so the
-// switcher can never offer a family the queue can't render. All first; Create
+// the raw feed). Non-comment families appear only with ≥1 renderable card
+// (dynamic); the "LinkedIn comments" tile is PINNED (always shown) so it can be
+// navigated to for an "All clear" even with 0 comment cards. All first; Create
 // post last (a capability, only when the feature is on). For the current live
 // feed (comment tasks only, otherCards off) this yields exactly:
 // All · LinkedIn comments · Create post.
 function deriveTiles(cards, includeCreate, hasConnections) {
   const eligible = queueEligibleCards(cards);
   const present = SWITCHER_FAMILIES.filter((fam) =>
-    eligible.some((c) => fam.match(c.task_type, c))
+    // "LinkedIn comments" is the app's PRIMARY family — keep its tile in the
+    // switcher even when 0 comment cards remain, so the operator can navigate to
+    // it and land on an explicit "All clear" instead of the tile silently
+    // vanishing (Samarth 2026-07-08: "it shouldn't go away, it should stay and
+    // show as all clear when navigated to via the options"). Every other family
+    // stays dynamic (tile appears only when it has a renderable card).
+    fam.key === "comments" || eligible.some((c) => fam.match(c.task_type, c))
   );
   const tiles = [TILE_ALL, ...present];
   if (hasConnections) tiles.push(TILE_CONNECTIONS);
