@@ -631,6 +631,19 @@ function getConnector(card) {
   return { icon: "•", label: card.source || "Task", tone: "default" };
 }
 
+// companyHoverText — the title-tooltip on a connection row's company name.
+// Real data only (from the Leads join in /api/sidekick/connections-sent):
+// "<Company> · <N> employees". blurb (what the company does) is appended when
+// present. Never fabricates — omits any part we don't have.
+function companyHoverText(l) {
+  if (!l) return undefined;
+  const emp = l.employees
+    ? `${l.employees}${l.employee_range ? ` (${l.employee_range})` : ""} employees`
+    : (l.employee_range ? `${l.employee_range} employees` : "");
+  const parts = [l.company, emp, l.blurb].filter(Boolean);
+  return parts.length ? parts.join(" · ") : undefined;
+}
+
 // ─── Task-switcher tiles (Kunal Jun30, ported from the approved mock) ───
 // A tile-per-task-family filter row. The tiles are DYNAMIC: a family tile only
 // renders when the live feed actually contains a card of that family (Samarth:
@@ -3987,9 +4000,10 @@ function ConnectionsSentCard({ conn, onMarkDone, onDefer, onExcludeLead }) {
                       {l.title}{l.title && l.company ? " · " : ""}
                       {l.company
                         ? <a
-                            href={`https://www.linkedin.com/search/results/companies/?keywords=${encodeURIComponent(l.company)}`}
+                            href={l.website || `https://www.linkedin.com/search/results/companies/?keywords=${encodeURIComponent(l.company)}`}
                             target="_blank"
                             rel="noopener noreferrer"
+                            title={companyHoverText(l)}
                           >{l.company}</a>
                         : null}
                     </div>
