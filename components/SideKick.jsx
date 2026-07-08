@@ -643,8 +643,10 @@ const companyBlurbCache = new Map();
 // present. Never fabricates — omits any part we don't have.
 function companyHoverText(l) {
   if (!l) return undefined;
+  // Show ONE employee figure — the exact count if we have it, else the band.
+  // (The raw count and range fields sometimes disagree, so don't show both.)
   const emp = l.employees
-    ? `${l.employees}${l.employee_range ? ` (${l.employee_range})` : ""} employees`
+    ? `${l.employees} employees`
     : (l.employee_range ? `${l.employee_range} employees` : "");
   const parts = [l.company, emp, l.blurb].filter(Boolean);
   return parts.length ? parts.join(" · ") : undefined;
