@@ -631,6 +631,12 @@ function getConnector(card) {
   return { icon: "•", label: card.source || "Task", tone: "default" };
 }
 
+// Session cache of company one-liner blurbs (keyed by lowercased company name),
+// so /api/company-blurb fires at most once per company per session. Module-level
+// so it survives re-renders and card re-polls. "" = fetched but no confident
+// blurb (don't refetch).
+const companyBlurbCache = new Map();
+
 // companyHoverText — the title-tooltip on a connection row's company name.
 // Real data only (from the Leads join in /api/sidekick/connections-sent):
 // "<Company> · <N> employees". blurb (what the company does) is appended when
@@ -1248,10 +1254,60 @@ export default function SideKick() {
     try {
       const r = await fetch("/api/connections-sent", { cache: "no-store" });
       const d = await r.json().catch(() => null);
-      if (d && d.ok) setConnData(d);
+      if (d && d.ok) {
+        // Attach any already-cached company blurbs synchronously so the hover
+        // tooltip has "what the company is" immediately on re-poll.
+        if (Array.isArray(d.leads)) {
+          for (const l of d.leads) {
+            const cached = companyBlurbCache.get((l.company || "").trim().toLowerCase());
+            if (cached) l.blurb = cached;
+          }
+        }
+        setConnData(d);
+        // Fire-and-forget: fetch missing blurbs (one AI call per NEW company,
+        // cached for the session), then merge them in. Never blocks the card.
+        enrichCompanyBlurbs(d.leads);
+      }
     } catch {
       /* non-fatal — card stays hidden until the next poll succeeds */
     }
+  }, []);
+
+  // enrichCompanyBlurbs — lazily fill l.blurb for the shown companies via
+  // /api/company-blurb (Claude), cached per company for the session so it fires
+  // at most once each. On success, patch connData's leads in place. Best-effort:
+  // any failure just leaves the tooltip at "<Company> · N employees".
+  const enrichCompanyBlurbs = useCallback(async (leads) => {
+    if (!Array.isArray(leads) || !leads.length) return;
+    const pending = [...new Set(
+      leads.map((l) => (l.company || "").trim()).filter((c) => c && !companyBlurbCache.has(c.toLowerCase()))
+    )];
+    if (!pending.length) return;
+    await Promise.all(pending.map(async (company) => {
+      const website = (leads.find((l) => (l.company || "").trim() === company) || {}).website || "";
+      try {
+        const r = await fetch("/api/company-blurb", {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ company, website }),
+        });
+        const d = await r.json().catch(() => null);
+        companyBlurbCache.set(company.toLowerCase(), d && d.ok ? (d.blurb || "") : "");
+      } catch {
+        companyBlurbCache.set(company.toLowerCase(), ""); // don't retry a hard failure this session
+      }
+    }));
+    // Merge freshly-fetched blurbs into the current connData leads.
+    setConnData((cur) => {
+      if (!cur || !Array.isArray(cur.leads)) return cur;
+      let changed = false;
+      const merged = cur.leads.map((l) => {
+        const b = companyBlurbCache.get((l.company || "").trim().toLowerCase());
+        if (b && l.blurb !== b) { changed = true; return { ...l, blurb: b }; }
+        return l;
+      });
+      return changed ? { ...cur, leads: merged } : cur;
+    });
   }, []);
 
   // Mark the connections card done → resets the count server-side. Optimistic:
