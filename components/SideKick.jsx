@@ -3984,7 +3984,14 @@ function ConnectionsSentCard({ conn, onMarkDone, onDefer, onExcludeLead }) {
                   </div>
                   {(l.title || l.company) && (
                     <div className="conn-rowsub">
-                      {l.title}{l.title && l.company ? " · " : ""}{l.company}
+                      {l.title}{l.title && l.company ? " · " : ""}
+                      {l.company
+                        ? <a
+                            href={`https://www.linkedin.com/search/results/companies/?keywords=${encodeURIComponent(l.company)}`}
+                            target="_blank"
+                            rel="noopener noreferrer"
+                          >{l.company}</a>
+                        : null}
                     </div>
                   )}
                 </div>
