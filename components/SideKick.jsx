@@ -1697,7 +1697,9 @@ export default function SideKick() {
     // (actionable task cards keep priority; the finalized card-spec orders the
     // review/digest surfaces last). Only in the unfiltered "All" view (it's a
     // digest, not a task family, so it never appears under a switcher filter),
-    // and only when the visibility gate passes (>=5 sent in the past 24h).
+    // and only when the visibility gate passes (>=5 sent in the recent window —
+    // widened 24h→72h, Samarth 2026-07-08, so a batch sent yesterday doesn't
+    // vanish overnight; `past24h` now carries the 72h count).
     if (FEATURES.connectionsSent && (queueFilter === null || queueFilter === "connections") && !connDismissed && connData && connData.past24h >= 5) {
       steps.push({ key: "connections", conn: connData });
     }
