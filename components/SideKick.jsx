@@ -734,6 +734,14 @@ const TILE_CONNECTIONS = {
   label: "Connections",
   icon: '<path d="M21.5 3.5 2.8 10.3a.5.5 0 0 0 .05.95l6.35 2.05 2.05 6.35a.5.5 0 0 0 .95.05L21.5 3.5Z"/><path d="M21.5 3.5 9.2 13.3"/>',
 };
+// DMs-sent review tile (2026-07-09). Dynamic: only appears when the DMs card is
+// available (past24h >= 1), so tapping it always lands on a real card. Speech
+// bubble = "messages sent".
+const TILE_DMS = {
+  key: "dms",
+  label: "DMs sent",
+  icon: '<path d="M20 11.5a7.5 7.5 0 0 1-10.9 6.7L4.5 19.5l1.3-4.2A7.5 7.5 0 1 1 20 11.5Z"/>',
+};
 
 // The 5 DM/connection Unipile task types (DM reply, connection accepted, DM
 // reaction, post reaction on yours, profile view). Hidden from BOTH the queue
@@ -785,7 +793,7 @@ function queueEligibleCards(cards) {
 // post last (a capability, only when the feature is on). For the current live
 // feed (comment tasks only, otherCards off) this yields exactly:
 // All · LinkedIn comments · Create post.
-function deriveTiles(cards, includeCreate, hasConnections) {
+function deriveTiles(cards, includeCreate, hasConnections, hasDms) {
   const eligible = queueEligibleCards(cards);
   const present = SWITCHER_FAMILIES.filter((fam) =>
     // "LinkedIn comments" is the app's PRIMARY family — keep its tile in the
@@ -798,6 +806,7 @@ function deriveTiles(cards, includeCreate, hasConnections) {
   );
   const tiles = [TILE_ALL, ...present];
   if (hasConnections) tiles.push(TILE_CONNECTIONS);
+  if (hasDms) tiles.push(TILE_DMS);
   if (includeCreate) tiles.push(TILE_CREATE);
   return tiles;
 }
@@ -1032,6 +1041,14 @@ export default function SideKick() {
   // Session-only "remind me later" — hides the connections card without resetting
   // the count (only Mark as done resets). Reappears on reload / next session.
   const [connDismissed, setConnDismissed] = useState(false);
+
+  // ─── DMs-sent digest (sibling of the connections card, 2026-07-09) ─────
+  // { count, past24h, leads:[{name,title,company,linkedin,website,employees,
+  //   employee_range,dm_step,last_dm_at}], lastMarkedDone } or null. The card
+  // enters the queue when FEATURES.dmsSent is on AND past24h >= 1 (any DM in the
+  // recent window — DMs are lower-volume than connection blasts, so gate at 1).
+  const [dmData, setDmData] = useState(null);
+  const [dmsDismissed, setDmsDismissed] = useState(false);
 
   // ─── Handled history (revisit actioned tasks — 2026-06-11) ─────
   // Done/Skip stamps Handled At server-side; "reopen" clears it so the
@@ -1299,8 +1316,8 @@ export default function SideKick() {
         companyBlurbCache.set(company.toLowerCase(), ""); // don't retry a hard failure this session
       }
     }));
-    // Merge freshly-fetched blurbs into the current connData leads.
-    setConnData((cur) => {
+    // Merge freshly-fetched blurbs into the current connData AND dmData leads.
+    const mergeBlurbs = (cur) => {
       if (!cur || !Array.isArray(cur.leads)) return cur;
       let changed = false;
       const merged = cur.leads.map((l) => {
@@ -1309,8 +1326,83 @@ export default function SideKick() {
         return l;
       });
       return changed ? { ...cur, leads: merged } : cur;
-    });
+    };
+    setConnData(mergeBlurbs);
+    setDmData(mergeBlurbs);
   }, []);
+
+  // ─── Fetch DMs-sent digest (sibling of fetchConnections) ────────
+  const fetchDms = useCallback(async () => {
+    if (!FEATURES.dmsSent) return;
+    try {
+      const r = await fetch("/api/dms-sent", { cache: "no-store" });
+      const d = await r.json().catch(() => null);
+      if (d && d.ok) {
+        if (Array.isArray(d.leads)) {
+          for (const l of d.leads) {
+            const cached = companyBlurbCache.get((l.company || "").trim().toLowerCase());
+            if (cached) l.blurb = cached;
+          }
+        }
+        setDmData(d);
+        enrichCompanyBlurbs(d.leads);
+      }
+    } catch {
+      /* non-fatal — card stays hidden until the next poll succeeds */
+    }
+  }, [enrichCompanyBlurbs]);
+
+  // Mark the DMs card done → resets the count server-side. Optimistic hide + Undo.
+  async function markDmsDone() {
+    const prev = dmData;
+    setDmData((c) => (c ? { ...c, past24h: 0 } : c));
+    setQueueFilter((f) => (f === "dms" ? null : f));
+    try {
+      const r = await fetch("/api/dms-sent", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ action: "mark_done" }),
+      });
+      const d = await r.json().catch(() => ({}));
+      if (d && d.ok) {
+        stickyTopIdRef.current = null;
+        showToast("Marked done — count reset", 4000, {
+          label: "Undo",
+          onUndo: async () => {
+            try {
+              await fetch("/api/dms-sent", {
+                method: "POST",
+                headers: { "Content-Type": "application/json" },
+                body: JSON.stringify({ action: "mark_done", at: prev?.lastMarkedDone || new Date(0).toISOString() }),
+              });
+            } catch { /* best-effort */ }
+            await fetchDms();
+          },
+        });
+        fetchDms();
+      } else {
+        setDmData(prev);
+        showToast(`Error: ${(d && d.error) || "Couldn't mark done"}`, 4000);
+      }
+    } catch (e) {
+      setDmData(prev);
+      showToast(`Network error: ${e.message}`, 4000);
+    }
+  }
+
+  // Flag a wrong lead from the DMs card feedback box → Outreach Status="excluded".
+  async function excludeDmLead({ leadName, linkedin }) {
+    try {
+      const r = await fetch("/api/dms-sent", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ action: "exclude_lead", leadName, linkedin }),
+      });
+      return await r.json().catch(() => ({ ok: false }));
+    } catch {
+      return { ok: false };
+    }
+  }
 
   // Mark the connections card done → resets the count server-side. Optimistic:
   // hide the card immediately, then confirm + offer Undo (restores the previous
@@ -1429,14 +1521,16 @@ export default function SideKick() {
     fetchFeed();
     fetchAutoBatches();
     fetchConnections();
+    fetchDms();
     loadHistory();
     const i = setInterval(() => {
       fetchFeed();
       fetchAutoBatches();
       fetchConnections();
+      fetchDms();
     }, POLL_INTERVAL_MS);
     return () => clearInterval(i);
-  }, [fetchFeed, fetchAutoBatches, fetchConnections, loadHistory]);
+  }, [fetchFeed, fetchAutoBatches, fetchConnections, fetchDms, loadHistory]);
 
   // ─── Movement scan status polling ───────────────────────────────
   // Polls every 20s when running (active progress); 60s when idle.
@@ -1693,7 +1787,7 @@ export default function SideKick() {
     const renderable = queueEligibleCards(cards);
     // "connections" is a virtual family (a single digest card, not feed tasks) —
     // its filter shows ONLY the connections card, so strip all task cards here.
-    const allCards = queueFilter === "connections"
+    const allCards = (queueFilter === "connections" || queueFilter === "dms")
       ? []
       : queueFilter
       ? renderable.filter((c) => tileMatch(c, queueFilter))
@@ -1781,6 +1875,10 @@ export default function SideKick() {
     if (FEATURES.connectionsSent && (queueFilter === null || queueFilter === "connections") && !connDismissed && connData && connData.past24h >= 5) {
       steps.push({ key: "connections", conn: connData });
     }
+    // DMs-sent digest — same placement rule, gated at >=1 (DMs are lower-volume).
+    if (FEATURES.dmsSent && (queueFilter === null || queueFilter === "dms") && !dmsDismissed && dmData && dmData.past24h >= 1) {
+      steps.push({ key: "dms", dms: dmData });
+    }
 
     // 4. Deferred steps sink to the back, in the order they were deferred.
     const deferredSet = new Set(deferred);
@@ -1788,7 +1886,7 @@ export default function SideKick() {
       ...steps.filter(s => !deferredSet.has(s.key)),
       ...deferred.map(k => steps.find(s => s.key === k)).filter(Boolean),
     ];
-  }, [cards, autoBatches, deferred, queueFilter, connData, connDismissed]);
+  }, [cards, autoBatches, deferred, queueFilter, connData, connDismissed, dmData, dmsDismissed]);
 
   // ─── Eager top + single next-step prefetch (item 8) ─────────────
   // item 8 (Kunal Jun12): EXACTLY ONE post is loaded eagerly — the focused
@@ -2387,7 +2485,8 @@ Best,
             to switch between) and while loading/errored. */}
         {!loading && !fetchError && (() => {
           const hasConnections = FEATURES.connectionsSent && !connDismissed && connData && connData.past24h >= 5;
-          const tiles = deriveTiles(cards, FEATURES.postCreate, hasConnections);
+          const hasDms = FEATURES.dmsSent && !dmsDismissed && dmData && dmData.past24h >= 1;
+          const tiles = deriveTiles(cards, FEATURES.postCreate, hasConnections, hasDms);
           // Only "All" (+ maybe Create post) → nothing to switch; hide the row.
           const hasFamilies = tiles.some(t => t.key !== "all" && t.key !== "createpost");
           if (!hasFamilies) return null;
@@ -2537,6 +2636,14 @@ Best,
                   onMarkDone={markConnectionsDone}
                   onDefer={() => { setConnDismissed(true); setQueueFilter((f) => (f === "connections" ? null : f)); }}
                   onExcludeLead={excludeConnLead}
+                />
+              ) : topStep.key === "dms" ? (
+                <DmsSentCard
+                  key="dms-sent"
+                  dms={topStep.dms}
+                  onMarkDone={markDmsDone}
+                  onDefer={() => { setDmsDismissed(true); setQueueFilter((f) => (f === "dms" ? null : f)); }}
+                  onExcludeLead={excludeDmLead}
                 />
               ) : (
                 <SwipeCard key={`swipe-${topCard.id}`} cardId={topCard.id} onAction={handleAction}>
@@ -4117,6 +4224,143 @@ function ConnectionsSentCard({ conn, onMarkDone, onDefer, onExcludeLead }) {
           {/* Secondary defer — matches every card's footer grammar. Hides the card
               for this session WITHOUT resetting the count (Mark as done is the only
               thing that resets). Kunal: "the bottom stays the same." */}
+          <button className="btn btn-ghost" disabled={busy} onClick={() => onDefer && onDefer()}>
+            Skip · remind me later
+          </button>
+        </div>
+      </div>
+    </div>
+  );
+}
+
+// ═══════════════════════════════════════════════════════════════════
+// DMS-SENT CARD — sibling of ConnectionsSentCard, for DMs that have gone out.
+// Same grammar/layout; each row shows which DM step (DM1/2/3) landed.
+// ═══════════════════════════════════════════════════════════════════
+function DmsSentCard({ dms, onMarkDone, onDefer, onExcludeLead }) {
+  const count = dms?.count || 0;
+  const leads = Array.isArray(dms?.leads) ? dms.leads : [];
+  const more = Math.max(0, count - leads.length);
+  const word = count === 1 ? "DM has gone out" : "DMs have gone out";
+
+  const [busy, setBusy] = useState(false);
+  const [fbInput, setFbInput] = useState("");
+  const [fbMsgs, setFbMsgs] = useState([]);
+  const [fbBusy, setFbBusy] = useState(false);
+  const threadRef = useRef(null);
+  useEffect(() => {
+    if (threadRef.current) threadRef.current.scrollTop = threadRef.current.scrollHeight;
+  }, [fbMsgs, fbBusy]);
+
+  async function markDone() {
+    if (busy) return;
+    setBusy(true);
+    await onMarkDone();
+    setBusy(false);
+  }
+
+  async function sendFeedback(text) {
+    const v = (text || "").trim();
+    if (!v || fbBusy) return;
+    setFbInput("");
+    setFbMsgs((m) => [...m, { role: "user", text: v }]);
+    setFbBusy(true);
+    const lower = v.toLowerCase();
+    const named = leads.find((l) => l.name && lower.includes(l.name.toLowerCase()));
+    let reply;
+    if (named) {
+      const res = await onExcludeLead({ leadName: named.name, linkedin: named.linkedin });
+      reply = res && res.excluded
+        ? `Got it — dropped ${named.name}, and told the ranking to stop surfacing them for future outreach.`
+        : `Got it — noted ${named.name} as off. I'll keep them out of future picks.`;
+    } else {
+      reply = "Got it — noted. Tell me the person's name and I'll drop them from this list and future outreach.";
+    }
+    setFbMsgs((m) => [...m, { role: "assistant", text: reply }]);
+    setFbBusy(false);
+  }
+
+  return (
+    <div className="card card-stack sk-card entering">
+      <div className="card-scroll">
+        <div className="card-header">
+          <span className="card-type card-type-movement">DMs · sent</span>
+        </div>
+
+        <div className="conn-count">
+          <span className="conn-num">{count}</span>
+          <span className="conn-word">{word}</span>
+        </div>
+        <div className="conn-sub">
+          Sent on your behalf since you last marked this done. Flag anyone who's off in the box below.
+        </div>
+
+        <div className="conn-window">
+          <div className="conn-winhead">
+            <span className="conn-winhead-t">DMs sent</span>
+          </div>
+          <div className="conn-scroll">
+            <div className="conn-list">
+              {leads.map((l, i) => (
+                <div className="conn-row" key={i}>
+                  <div className="conn-name">
+                    {l.linkedin
+                      ? <a href={l.linkedin} target="_blank" rel="noopener noreferrer">{l.name || "Unknown"}</a>
+                      : (l.name || "Unknown")}
+                    {l.dm_step ? <span className="conn-step"> · DM{l.dm_step}</span> : null}
+                  </div>
+                  {(l.title || l.company) && (
+                    <div className="conn-rowsub">
+                      {l.title}{l.title && l.company ? " · " : ""}
+                      {l.company
+                        ? <a
+                            href={l.website || `https://www.linkedin.com/search/results/companies/?keywords=${encodeURIComponent(l.company)}`}
+                            target="_blank"
+                            rel="noopener noreferrer"
+                            title={companyHoverText(l)}
+                          >{l.company}</a>
+                        : null}
+                    </div>
+                  )}
+                </div>
+              ))}
+            </div>
+          </div>
+          {more > 0 && (
+            <div className="conn-more">+ {more} more sent</div>
+          )}
+        </div>
+
+        {fbMsgs.length > 0 && (
+          <div className="fb-thread" ref={threadRef}>
+            {fbMsgs.map((m, i) => (
+              <div key={i} className={`fb-bub fb-bub-${m.role}`}>{m.text}</div>
+            ))}
+            {fbBusy && <div className="fb-bub fb-bub-assistant"><span className="spinner spinner-sm" /> …</div>}
+          </div>
+        )}
+      </div>
+
+      <div className="card-foot">
+        <div className="fbrow">
+          <input
+            type="text"
+            className="fbrow-input"
+            placeholder="Someone off? Tell me who and I'll drop them"
+            value={fbInput}
+            disabled={fbBusy}
+            onChange={(e) => setFbInput(e.target.value)}
+            onKeyDown={(e) => { if (e.key === "Enter") { e.preventDefault(); e.stopPropagation(); sendFeedback(fbInput); } }}
+            autoComplete="off"
+          />
+          <button type="button" className="fb-send" onClick={() => sendFeedback(fbInput)} disabled={fbBusy || !fbInput.trim()} aria-label="Send">
+            {fbBusy ? <span className="spinner spinner-sm" /> : "→"}
+          </button>
+        </div>
+        <div className="actions">
+          <button className="btn primary" disabled={busy} onClick={markDone}>
+            {busy ? <><span className="spinner spinner-sm" /> Marking…</> : "✓ Mark as done"}
+          </button>
           <button className="btn btn-ghost" disabled={busy} onClick={() => onDefer && onDefer()}>
             Skip · remind me later
           </button>
