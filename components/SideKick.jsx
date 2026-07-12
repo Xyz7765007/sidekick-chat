@@ -2447,15 +2447,11 @@ Best,
             >
               ↩<span className="hdr-action-label"> Handled</span>
             </button>
-            {FEATURES.postCreate && (
-              <button
-                className={`hdr-action ${postCreateOpen ? "hdr-action-active" : ""}`}
-                onClick={() => setPostCreateOpen(o => !o)}
-                title="Create an original LinkedIn post"
-              >
-                ✎<span className="hdr-action-label"> {postCreateOpen ? "Close" : "Create post"}</span>
-              </button>
-            )}
+            {/* Header "Create post" CTA removed (Samarth Jul13) — the switcher
+                tile row already carries Create post (always reachable: the
+                pinned LinkedIn-comments tile keeps the row rendered), and the
+                PostCreatorCard has its own Close. One affordance, not two
+                (less-is-more). */}
             {FEATURES.connectionFlow && (
               <button
                 className="hdr-action"
