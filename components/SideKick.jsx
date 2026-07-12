@@ -774,11 +774,15 @@ function isDmConnectionCard(card) {
 // tile can surface them (Kunal Jul01) — comments (unipile_post_comment_on_yours)
 // stay.
 function queueEligibleCards(cards) {
+  // News signal tasks (task_type "news", Kunal Jul13) are ALWAYS eligible —
+  // they ride alongside the comment queue even with otherCards off, without
+  // un-hiding the other stripped families (movement/top_x/GA).
   let eligible = FEATURES.otherCards
     ? cards
     : cards.filter(
         (c) =>
           c.task_type === "linkedin_engagement" ||
+          c.task_type === "news" ||
           (c.task_type || "").startsWith("unipile_")
       );
   if (!FEATURES.dmsConnections) {
@@ -1210,11 +1214,13 @@ export default function SideKick() {
       // hidden, so DON'T fetch every unipile_* — fetch only comment tasks
       // (linkedin_engagement + unipile_post_comment_on_yours, both COMMENTS) so
       // the DM/connection cards never enter the feed or the count.
+      // "news" added to both scoped variants (Kunal Jul13) so the badge counts
+      // the news signal cards the queue now renders.
       const countQS = FEATURES.otherCards
         ? ""
         : FEATURES.dmsConnections
-          ? "?taskType=linkedin_engagement,unipile_"
-          : "?taskType=linkedin_engagement,unipile_post_comment_on_yours";
+          ? "?taskType=linkedin_engagement,unipile_,news"
+          : "?taskType=linkedin_engagement,unipile_post_comment_on_yours,news";
       const [r, rc] = await Promise.all([
         fetch(`/api/feed?limit=${FEED_LIMIT}`, { cache: "no-store" }),
         fetch(`/api/count${countQS}`, { cache: "no-store" }).catch(() => null),
@@ -3380,7 +3386,10 @@ function Card({ card, leaving, enriching, subject, meta, summary, onAction, onEn
               <div className="li-post-fbhint" aria-hidden="true">💬 highlight to give feedback</div>
             </FeedbackCapture>
           )}
-          {(isUnipileSignal || showFullData || summary === "error") && (
+          {/* With FEATURES.summary off, no AI summary is ever fetched — show the
+              raw signal by default so non-unipile cards (news, Kunal Jul13)
+              aren't left bodyless. Unipile cards already rendered raw. */}
+          {(isUnipileSignal || !FEATURES.summary || showFullData || summary === "error") && (
             <div className="card-signal-text">
               <ExpandableSignal text={formatSignalText(card.signal)} threshold={8} />
             </div>
