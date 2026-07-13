@@ -703,11 +703,30 @@ const SWITCHER_FAMILIES = [
       t === "unipile_post_reaction_on_yours" ||
       t === "unipile_profile_view",
   },
+  // News signals are TWO separate surfaces (Samarth Jul13): existing-lead
+  // company news vs relevant news on companies NOT in the book. Split on the
+  // SignalScope Task Rule ("News: Existing Leads" / "News: New Companies")
+  // so each batch gets its own tile + filtered queue.
+  {
+    key: "newsleads",
+    label: "Lead news",
+    icon: '<path d="M5.25 5.5h10.5a1.25 1.25 0 0 1 1.25 1.25v10.5a2 2 0 0 1-2 2H6.5a2 2 0 0 1-2-2V5.5Z"/><path d="M17 9.5h1.5a1.25 1.25 0 0 1 1.25 1.25v6a1.25 1.25 0 0 1-2.5 0M7.75 9h6M7.75 12.25h6M7.75 15.5h3.5"/>',
+    match: (t, card) => t === "news" && !/new compan/i.test((card && card.task_rule) || ""),
+  },
+  {
+    key: "newsmarket",
+    label: "Market news",
+    icon: '<path d="M5.25 5.5h10.5a1.25 1.25 0 0 1 1.25 1.25v10.5a2 2 0 0 1-2 2H6.5a2 2 0 0 1-2-2V5.5Z"/><path d="M17 9.5h1.5a1.25 1.25 0 0 1 1.25 1.25v6a1.25 1.25 0 0 1-2.5 0M7.75 9h6M7.75 12.25h6M7.75 15.5h3.5"/><circle cx="16.5" cy="7" r="2.2"/>',
+    match: (t, card) => t === "news" && /new compan/i.test((card && card.task_rule) || ""),
+  },
   {
     key: "news",
     label: "News",
     icon: '<path d="M5.25 5.5h10.5a1.25 1.25 0 0 1 1.25 1.25v10.5a2 2 0 0 1-2 2H6.5a2 2 0 0 1-2-2V5.5Z"/><path d="M17 9.5h1.5a1.25 1.25 0 0 1 1.25 1.25v6a1.25 1.25 0 0 1-2.5 0M7.75 9h6M7.75 12.25h6M7.75 15.5h3.5"/>',
     match: (t, card) => {
+      // Legacy hint-based catch for non-"news"-typed connectors only — the
+      // two dedicated news tiles above own task_type "news".
+      if (t === "news") return false;
       if (["linkedin_engagement", "lead_movement", "top_x", "engagement"].includes(t)) return false;
       if ((t || "").startsWith("unipile_")) return false;
       const hint = `${(card && card.source) || ""} ${(card && card.task_rule) || ""}`.toLowerCase();
