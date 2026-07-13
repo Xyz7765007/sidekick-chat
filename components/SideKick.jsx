@@ -1828,12 +1828,18 @@ export default function SideKick() {
     // the stripped (otherCards off) queue, ranked FIRST (time-sensitive), and by
     // score within (DM reply 95 > comment 80 > connection accepted 70 > …).
     const unipileSignals = allCards.filter(c => (c.task_type || "").startsWith("unipile_"));
+    // News signal cards (Kunal Jul13) — must be stacked EXPLICITLY: the stripped
+    // branch below enumerates its families, so anything not listed silently
+    // vanishes from the queue even though its tile shows (the Jul13 bug: both
+    // news tiles rendered but filtered to an empty queue → false "All clear").
+    const newsCards = allCards.filter(c => c.task_type === "news");
     const accountedFor = new Set([
       ...movements.map(c => c.id),
       ...topLeads.map(c => c.id),
       ...liComments.map(c => c.id),
       ...gaVisitors.map(c => c.id),
       ...unipileSignals.map(c => c.id),
+      ...newsCards.map(c => c.id),
     ]);
     const other = allCards.filter(c => !accountedFor.has(c.id));
     const byScore = (a, b) => (b.score || 0) - (a.score || 0);
@@ -1855,13 +1861,15 @@ export default function SideKick() {
           ...movements.sort(byScore),
           ...topLeads.sort(byScore),
           ...liComments.sort(byPriority),
+          ...newsCards.sort(byScore),
           ...gaVisitors.sort(byScore),
           ...other.sort(byScore),
         ]
       // Stripped queue (otherCards off): Unipile outreach-sequence signals first
       // (DM reply / connection accepted / engagement — time-sensitive, score-led),
-      // then LinkedIn-post tasks.
-      : [...unipileSignals.sort(byPriority), ...liComments.sort(byPriority)];
+      // then LinkedIn-post tasks, then news signal cards (additive to the daily
+      // comment core; under a news tile the subset is news-only anyway).
+      : [...unipileSignals.sort(byPriority), ...liComments.sort(byPriority), ...newsCards.sort(byScore)];
 
     // 2. Daily batch step — merge all pending_approval records into ONE virtual
     //    batch. Dedup by record id, then by name+company.
