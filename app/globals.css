@@ -458,14 +458,15 @@ body { position: relative; }
 .switchwrap { display: flex; justify-content: flex-start; padding: 14px 16px 6px; }
 .switchrow {
   display: flex;
+  /* Wrap instead of horizontal scroll (Samarth Jul13): with 7 chips the row
+     overflowed, and hidden-scrollbar scrolling is unusable with a mouse on
+     desktop (no visible bar, nothing to drag). Wrapping keeps every chip
+     reachable on every input device with zero extra affordances. */
+  flex-wrap: wrap;
   gap: 8px;
   max-width: 540px;
   width: 100%;
-  overflow-x: auto;
-  overflow-y: hidden;
   padding: 2px 2px 4px;
-  scrollbar-width: none;
-  -webkit-overflow-scrolling: touch;
   justify-content: flex-start;
 }
 .switchrow::-webkit-scrollbar { display: none; }
