@@ -2267,6 +2267,81 @@ body { position: relative; }
 .li-author-sep { color: var(--text-3); font-size: 12px; }
 .li-author-co { font-size: 13px; color: var(--text-2); }
 
+/* ── News signal card sections (Kunal Jul13) ──────────────────────
+   Same visual language as the comment card: quiet uppercase labels,
+   text-2 body, chips from --border, orange stays reserved for the CTA. */
+.news-head { margin-top: 14px; }
+.news-headline {
+  font-size: 15px;
+  font-weight: 600;
+  line-height: 1.45;
+  color: var(--text);
+}
+.news-source {
+  display: inline-block;
+  margin-top: 5px;
+  font-size: 12.5px;
+  color: var(--text-2);
+  text-decoration: none;
+  border-bottom: 1px solid var(--border-2);
+  padding-bottom: 1px;
+}
+.news-source:hover { color: var(--text); border-bottom-color: var(--text-3); }
+.news-sect { margin-top: 14px; }
+.news-label {
+  font-size: 10.5px;
+  font-weight: 700;
+  color: var(--text-3);
+  text-transform: uppercase;
+  letter-spacing: 0.6px;
+  margin-bottom: 5px;
+}
+.news-text { font-size: 13.5px; line-height: 1.55; color: var(--text-2); }
+.news-steps {
+  list-style: none;
+  margin: 0;
+  padding: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 9px;
+  counter-reset: newsstep;
+}
+.news-step {
+  position: relative;
+  padding-left: 27px;
+  font-size: 13.5px;
+  line-height: 1.5;
+  color: var(--text-2);
+  counter-increment: newsstep;
+}
+.news-step::before {
+  content: counter(newsstep);
+  position: absolute;
+  left: 0;
+  top: 1px;
+  width: 18px;
+  height: 18px;
+  border-radius: 50%;
+  background: var(--border);
+  color: var(--text-2);
+  font-size: 11px;
+  font-weight: 700;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+}
+.news-when {
+  display: inline-block;
+  margin-right: 6px;
+  padding: 1px 8px;
+  border-radius: 999px;
+  background: var(--border);
+  font-size: 11px;
+  font-weight: 600;
+  color: var(--text-2);
+  white-space: nowrap;
+}
+
 /* Post engagement counts (likes / comments) — Kunal Jun16 */
 .li-engagement { display: flex; gap: 14px; margin-top: 7px; }
 .li-eng-item { font-size: 12.5px; color: var(--text-2); display: inline-flex; align-items: center; gap: 4px; }

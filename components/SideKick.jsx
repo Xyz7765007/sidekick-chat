@@ -1694,6 +1694,8 @@ export default function SideKick() {
     // Unipile signal cards (DM reply, connection accepted, reactions, profile
     // view, etc.) render their raw signal — don't spend a summarize call on them.
     if ((target.task_type || "").startsWith("unipile_")) return;
+    // News cards render their own parsed sections (NewsCard) — no AI summary.
+    if (target.task_type === "news") return;
     // Already cached / loading / in-flight? Skip.
     if (summaries[target.id]) return;
     if (pendingSummariesRef.current.has(target.id)) return;
@@ -2693,6 +2695,16 @@ Best,
                       isFocused={topIsFocused}
                       onCopied={(msg) => showToast(msg, 2600)}
                       onNotNeeded={markNotNeeded}
+                    />
+                  ) : topCard.task_type === "news" ? (
+                    <NewsCard
+                      key={topCard.id}
+                      card={topCard}
+                      leaving={leaving.has(topCard.id)}
+                      subject={getSubject(topCard)}
+                      onAction={handleAction}
+                      onCopied={(msg) => showToast(msg, 2600)}
+                      onFeedbackSubmitted={handleFeedbackSubmitted}
                     />
                   ) : (
                     <Card
@@ -4104,6 +4116,261 @@ function LinkedInCommentCard({
               <button className="btn primary" disabled={isDisabled} onClick={() => onAction(card.id, "done")}>✓ Mark Done</button>
               {postUrl && (
                 <a className="btn btn-secondary" href={postUrl} target="_blank" rel="noopener noreferrer">↗ Open on LinkedIn</a>
+              )}
+              <button className="btn btn-ghost" disabled={isDisabled} onClick={() => (FEATURES.skipReason ? setSkipping(true) : onAction(card.id, "skip"))}>Skip</button>
+            </div>
+          </>
+        )}
+      </div>
+    </div>
+  );
+}
+
+// ═══════════════════════════════════════════════════════════════════
+// NEWS SIGNAL CARD  (Kunal Jul13 — Veloka news signals, two batches)
+// Renders task_type "news" in the finalized card grammar (.sk-card chrome:
+// scroll area + sticky footer with the shared feedback box + CTA row)
+// instead of the generic raw-signal card, which dumped the whole Signal
+// string as an emoji wall (Samarth: "nothing like the aesthetic we fixed").
+//
+// The task's Signal is a structured marker string written by the news run
+// (📰 headline 🔗 url 📝 what happened 💡 why now → actions 💬 opener).
+// parseNewsSignal() lifts it into native sections; if parsing fails
+// (legacy/free-form signal) the card falls back to ExpandableSignal so it
+// is never bodyless. The opener is written as lead-facing copy at task
+// creation (public facts only, rule #6) — everything else stays
+// operator-facing and is never copied into outreach.
+// ═══════════════════════════════════════════════════════════════════
+function parseNewsSignal(raw) {
+  if (!raw || typeof raw !== "string") return null;
+  const grab = (re) => { const m = raw.match(re); return m ? m[1].trim() : ""; };
+  const headline = grab(/📰\s*([\s\S]*?)\s*(?=🔗|📝|💡|→|💬|$)/u)
+    .replace(/^(EXISTING LEAD|NEW COMPANY[^|]*?)\s*\|\s*/i, "").trim();
+  const url = grab(/🔗\s*(\S+)/u);
+  const what = grab(/📝\s*(?:WHAT HAPPENED:)?\s*([\s\S]*?)(?=💡|→|💬|$)/u);
+  const why = grab(/💡\s*(?:WHY[^:]*:)?\s*([\s\S]*?)(?=→|💬|$)/u);
+  const opener = grab(/💬\s*(?:OPENER DRAFT:)?\s*([\s\S]*)$/u);
+  const actions = raw.split("→").slice(1)
+    .map((s) => s.split("💬")[0].trim())
+    .filter(Boolean)
+    .map((a) => {
+      const m = a.match(/^ACTION\s*\d+\s*\(([^)]+)\)\s*:\s*([\s\S]*)$/i);
+      return m ? { when: m[1].trim(), text: m[2].trim() } : { when: "", text: a };
+    });
+  if (!headline && !what && !opener) return null;
+  return { headline, url, what, why, actions, opener };
+}
+
+function NewsCard({ card, leaving, subject, onAction, onCopied, onFeedbackSubmitted }) {
+  const parsed = useMemo(() => parseNewsSignal(card.signal), [card.signal]);
+  const isMarket = /new compan/i.test(card.task_rule || "");
+  const isDisabled = leaving;
+  const articleUrl = (parsed && parsed.url) || card.url || "";
+  const linkedinUrl = card.lead_linkedin || "";
+
+  const [opener, setOpener] = useState((parsed && parsed.opener) || "");
+  const [skipping, setSkipping] = useState(false);
+  const [askInput, setAskInput] = useState("");
+  const [askMsgs, setAskMsgs] = useState([]);
+  const [askBusy, setAskBusy] = useState(false);
+  const askThreadRef = useRef(null);
+  useEffect(() => {
+    if (askThreadRef.current) askThreadRef.current.scrollTop = askThreadRef.current.scrollHeight;
+  }, [askMsgs, askBusy]);
+
+  function copyOpener() {
+    if (!opener.trim()) return;
+    copyToClipboard(opener, () => onCopied?.("Opener copied — paste it in your DM or comment."));
+  }
+
+  // Same per-task helper the comment card uses (/api/post-chat): the news
+  // brief rides in the `post` slot, internal context in leadContext (the
+  // route's prompt already forbids leaking it into drafted copy).
+  async function sendAsk(q) {
+    const text = (q || "").trim();
+    if (!text || askBusy) return;
+    setAskMsgs((m) => [...m, { role: "user", text }]);
+    setAskInput("");
+    setAskBusy(true);
+    try {
+      const newsBrief = parsed
+        ? `NEWS: ${parsed.headline}. ${parsed.what}`
+        : (card.signal || "").slice(0, 600);
+      const r = await fetch("/api/post-chat", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          message: text,
+          post: newsBrief,
+          author: postAuthorLine(card),
+          history: askMsgs.slice(-6),
+          leadContext: { score: card.score, signal: card.signal, task_rule: card.task_rule, task_type: card.task_type },
+        }),
+      });
+      const d = await r.json();
+      setAskMsgs((m) => [...m, { role: "assistant", text: d?.ok ? d.reply : (d?.error || "Couldn't answer that.") }]);
+      if (d?.ok && d.feedback?.text) {
+        fetch("/api/feedback", {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({
+            item_type: "task_feedback",
+            feedback_text: d.feedback.text,
+            quoted_span: (card.signal || "").slice(0, 280),
+            lead_name: card.lead_name || "",
+            lead_company: card.company || "",
+          }),
+        }).catch(() => {});
+        onFeedbackSubmitted?.();
+      }
+    } catch {
+      setAskMsgs((m) => [...m, { role: "assistant", text: "Network error — try again." }]);
+    } finally {
+      setAskBusy(false);
+    }
+  }
+
+  function submitSkip(reason) {
+    const r = (reason || "").trim();
+    if (r) {
+      fetch("/api/feedback", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          item_type: "skip_reason",
+          quoted_span: (card.signal || "").slice(0, 280),
+          feedback_text: r,
+          lead_name: card.lead_name || "",
+          lead_company: card.company || "",
+        }),
+      }).catch(() => {});
+    }
+    setSkipping(false);
+    onAction(card.id, "skip");
+  }
+
+  return (
+    <div className={`card card-stack sk-card ${leaving ? "leaving" : "entering"}`}>
+      <div className="card-scroll">
+        <div className="card-header">
+          <span className="card-type card-type-default">
+            <span className="card-type-icon">📰</span>
+            {isMarket ? "Market news" : "Lead news"}
+          </span>
+        </div>
+
+        <div className="card-name">{subject}</div>
+        {(card.lead_title || card.company) && (
+          <div className="li-author">
+            {card.lead_title ? <span className="li-author-role">{card.lead_title}</span> : null}
+            {card.lead_title && card.company ? <span className="li-author-sep">·</span> : null}
+            {card.company ? <span className="li-author-co">{card.company}</span> : null}
+          </div>
+        )}
+
+        {parsed ? (
+          <>
+            <div className="news-head">
+              <div className="news-headline">{parsed.headline}</div>
+              {articleUrl && (
+                <a className="news-source" href={articleUrl} target="_blank" rel="noopener noreferrer">
+                  Read the article ↗
+                </a>
+              )}
+            </div>
+            {parsed.what && (
+              <div className="news-sect">
+                <div className="news-label">What happened</div>
+                <div className="news-text">{parsed.what}</div>
+              </div>
+            )}
+            {parsed.why && (
+              <div className="news-sect">
+                <div className="news-label">Why now</div>
+                <div className="news-text">{parsed.why}</div>
+              </div>
+            )}
+            {parsed.actions.length > 0 && (
+              <div className="news-sect">
+                <div className="news-label">The play</div>
+                <ol className="news-steps">
+                  {parsed.actions.map((a, i) => (
+                    <li key={i} className="news-step">
+                      {a.when && <span className="news-when">{a.when}</span>}
+                      {a.text}
+                    </li>
+                  ))}
+                </ol>
+              </div>
+            )}
+            {parsed.opener && (
+              <div className="li-comment-block">
+                <div className="li-comment-hdr">
+                  <span className="li-comment-label">Suggested opener (editable)</span>
+                  <span className="li-comment-meta">{opener.length} chars</span>
+                </div>
+                <FeedbackCapture
+                  itemType="comment"
+                  leadName={card.lead_name}
+                  leadCompany={card.company}
+                  onSubmitted={onFeedbackSubmitted}
+                >
+                  <textarea
+                    className="li-comment-edit"
+                    value={opener}
+                    rows={Math.max(3, Math.min(8, Math.ceil((opener.length || 1) / 70)))}
+                    onChange={(e) => setOpener(e.target.value)}
+                  />
+                </FeedbackCapture>
+                <div className="li-comment-row">
+                  <button className="btn" onClick={copyOpener} disabled={isDisabled || !opener.trim()} type="button">
+                    ⧉ Copy opener
+                  </button>
+                </div>
+              </div>
+            )}
+          </>
+        ) : (
+          <div className="card-signal-text">
+            <ExpandableSignal text={formatSignalText(card.signal)} threshold={8} />
+          </div>
+        )}
+
+        {askMsgs.length > 0 && (
+          <div className="fb-thread" ref={askThreadRef}>
+            {askMsgs.map((m, i) => (
+              <div key={i} className={`fb-bub fb-bub-${m.role}`}>{m.text}</div>
+            ))}
+            {askBusy && <div className="fb-bub fb-bub-assistant"><span className="spinner spinner-sm" /> Thinking…</div>}
+          </div>
+        )}
+      </div>{/* /.card-scroll */}
+
+      {/* Sticky footer — the consistent card grammar: feedback box + CTAs. */}
+      <div className="card-foot">
+        {skipping ? (
+          <SkipReason onConfirm={submitSkip} onCancel={() => setSkipping(false)} disabled={isDisabled} />
+        ) : (
+          <>
+            <div className="fbrow">
+              <input
+                type="text"
+                className="fbrow-input"
+                placeholder="Ask about this task, or give feedback…"
+                value={askInput}
+                disabled={askBusy}
+                onChange={(e) => setAskInput(e.target.value)}
+                onKeyDown={(e) => { if (e.key === "Enter") { e.preventDefault(); e.stopPropagation(); sendAsk(askInput); } }}
+                autoComplete="off"
+              />
+              <button type="button" className="fb-send" onClick={() => sendAsk(askInput)} disabled={askBusy || !askInput.trim()} aria-label="Send">
+                {askBusy ? <span className="spinner spinner-sm" /> : "→"}
+              </button>
+            </div>
+            <div className="actions">
+              <button className="btn primary" disabled={isDisabled} onClick={() => onAction(card.id, "done")}>✓ Mark Done</button>
+              {linkedinUrl && (
+                <a className="btn btn-secondary" href={linkedinUrl} target="_blank" rel="noopener noreferrer">↗ Open on LinkedIn</a>
               )}
               <button className="btn btn-ghost" disabled={isDisabled} onClick={() => (FEATURES.skipReason ? setSkipping(true) : onAction(card.id, "skip"))}>Skip</button>
             </div>
