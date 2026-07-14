@@ -109,12 +109,33 @@ properly live needs a real number + Business verification.
 
 ---
 
+## This is an EXTENSION. Nothing in the app changes. (Samarth, 14 Jul)
+
+The web app is not being migrated, replaced, or refactored. WhatsApp is a second
+front-end bolted onto the existing brain — the app must behave **identically**
+whether or not WhatsApp exists.
+
+Verified at the commit level: every file in this feature is a NEW file.
+`components/SideKick.jsx`, `app/globals.css`, `package.json`, and every existing
+API route are **untouched**. On SignalScope, `wa-session` is a new route and a new
+auto-created table; no existing table, field, or endpoint was altered.
+
+**Consequence — a deliberate duplication, do NOT "tidy" it:**
+`lib/task-priority.js` holds a COPY of the ranking functions (`postAgeDays` /
+`freshnessBoost` / `taskPriority`) that also live inside `components/SideKick.jsx`.
+Collapsing the component onto the shared module would be a clean refactor and it is
+**explicitly not wanted** — it would mean editing the app to ship the extension.
+The copy is the price of leaving the app alone, and it is the right price.
+
+If the web ranking ever changes, mirror the change into `lib/task-priority.js` so
+the two surfaces don't drift on what "next" means.
+
+Everything else the extension needs, it already reuses read-only: the same
+`/api/comment-angles`, `/api/generate-comment`, `/api/post-create`, `/api/post-chat`,
+`/api/action`, `/api/feedback`, `/api/preferences`. It calls them; it doesn't change
+them. The one new `item_type` it writes (`comment_steer`) is new precisely so it
+can't alter what the app already reads.
+
 ## Known follow-ups
 
-- **`components/SideKick.jsx` still has its own copy of the priority functions**
-  (`postAgeDays` / `freshnessBoost` / `taskPriority`). They now also live in
-  `lib/task-priority.js`, which WhatsApp uses. Collapsing the component onto the
-  shared module is a 3-line no-op refactor — worth doing so the two surfaces can
-  never rank tasks differently. Needs Samarth's OK (touching SideKick.jsx →
-  present plan first).
-- **Daily push template** — see above.
+- **Daily push template** — see the 24h-window section above.
