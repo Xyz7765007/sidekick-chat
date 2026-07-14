@@ -19,6 +19,21 @@ When Samarth asks for a feature, the first design pass should be the
 SMALLEST visible footprint that does the job — then offer the richer
 version only if the minimal one falls short.
 
+### Design-language components (standing — reuse, never reinvent)
+
+- **Copy on a draft box = `.copybox` (Samarth, 2026-07-13).** Any box whose
+  content the operator copies out (openers, notes, drafts) gets ONE icon-only
+  ⧉ button pinned in the box's TOP-RIGHT corner: wrap the field in
+  `<div className="copybox">` and add
+  `<button className="copybox-btn" title="Copy …" aria-label="Copy …">⧉</button>`
+  wired to `copyToClipboard` + the copied-toast. Styles live in `globals.css`
+  (`.copybox` / `.copybox-btn`; the field gets `padding-right` automatically so
+  text never runs under the icon). NEVER a separate "Copy X" CTA button
+  below/beside the box. First use: the NewsCard suggested opener. Exception:
+  flows whose LOCKED spec bundles copy into a combined action (post-creator
+  "Copy & open LinkedIn") keep their spec — this rule governs standalone copy
+  affordances.
+
 ---
 
 ## 1. What this is
