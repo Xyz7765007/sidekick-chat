@@ -27,19 +27,41 @@ No new npm dependencies. The 3-dependency rule holds.
 
 ## Step 1 — Create the Meta app (~10 min)
 
-1. <https://developers.facebook.com/apps> → **Create App** → type **Business**.
-2. In the app, add the **WhatsApp** product.
-3. Meta hands you, free, on the **API Setup** page:
-   - a **test phone number** (this is the number Kunal will message)
-   - a **Phone number ID** → `WHATSAPP_PHONE_NUMBER_ID`
-   - a **temporary access token** (24h) → `WHATSAPP_TOKEN`
-4. On the same page, **add recipient numbers**: Kunal's and yours. The test
-   number can only message numbers registered here (max 5). Each gets a
-   confirmation code on WhatsApp.
-5. **App Settings → Basic → App Secret** → `WHATSAPP_APP_SECRET`.
+Verified against Meta's current docs, 14 Jul 2026. Meta's flow is now **use-case
+driven** — you do NOT pick an app "type" any more, and the WhatsApp settings do
+NOT live under a "WhatsApp" sidebar item. Follow these labels exactly.
 
-> The 24h token is fine for the test. For anything lasting, create a **System
-> User** in Business Settings and issue a permanent token with `whatsapp_business_messaging`.
+1. <https://developers.facebook.com/apps> → **Create app**.
+2. **App name** + contact email.
+3. **Use case** screen → pick **"Connect with customers through WhatsApp"**.
+   (This is the screen that asks "what do you want your app to do". Don't pick
+   "Other".) → **Next**.
+4. **Business portfolio** → select one, or **create one on the spot**. This is the
+   "business profile" prompt. Name it Side Kick, use your work email.
+   - **You do NOT need Business Verification for this test.** Verification is only
+     required for a *production* phone number, higher send limits, and template
+     approval. The free test number works on an unverified portfolio.
+5. **Publishing requirements** → likely empty → **Next** → **Create app**.
+
+Meta now auto-creates a test WhatsApp Business Account + a **free test phone
+number** for you.
+
+6. Go to **Use cases → Customize → API Setup** (NOT a "WhatsApp" sidebar item —
+   that's the old flow). There you get:
+   - the **test phone number** (this is the number Kunal messages)
+   - **Phone number ID** → `WHATSAPP_PHONE_NUMBER_ID` *(the ID, not the number)*
+   - **Generate access token** → `WHATSAPP_TOKEN` (temporary, 24h)
+7. Same page → **To** field → **Manage phone number list** → add **Kunal's number
+   and yours**. Max 5 recipients on a test number. Each gets a confirmation code
+   on WhatsApp that you must enter.
+8. **App settings → Basic → App secret** (click **Show**) → `WHATSAPP_APP_SECRET`.
+
+> ⚠️ The token from step 6 **expires in 24 hours**. Fine for a same-day test with
+> Kunal. The moment you want it to keep working: **Business settings → Users →
+> System users** → create a system user → give it Full control of the app + the
+> WhatsApp Business Account → **Generate new token** with `whatsapp_business_messaging`
+> + `whatsapp_business_management`. That token doesn't expire. Swap it into
+> `WHATSAPP_TOKEN` and redeploy.
 
 ## Step 2 — Set the env vars (Vercel → sidekick-chat → Settings → Environment Variables)
 
@@ -58,12 +80,24 @@ OPENAI_API_KEY             = sk-...             # voice notes only (Whisper)
 
 ## Step 3 — Point Meta at the webhook
 
-Meta app → **WhatsApp → Configuration → Edit** callback URL:
+Go to **Use cases → Customize → Configuration**. (On the use-case flow this is
+where webhooks live. The old docs say "WhatsApp → Configuration" — that sidebar
+item does not exist on a use-case app. Same panel, different path.)
 
 - **Callback URL:** `https://sidekick-chat-beige.vercel.app/api/whatsapp/webhook`
 - **Verify token:** the exact `WHATSAPP_VERIFY_TOKEN` string you invented
-- Click **Verify and save** (Meta calls the GET route; it echoes the challenge back)
-- Then **Manage** → subscribe to the **`messages`** field. This is the step everyone forgets — without it Meta accepts the webhook but never sends you anything.
+- Click **Verify and save**. Meta calls the GET route and expects the challenge
+  echoed back. If this fails, it's almost always because the env vars from Step 2
+  were set but **not redeployed** — the running build doesn't have the token yet.
+- Then, in the **Webhook fields** list, click **Manage** and **subscribe to
+  `messages`**. This is the step everyone forgets. Without it Meta happily accepts
+  your callback URL and then never sends you a single message.
+
+> **If the URL verifies but no messages ever arrive:** flip the app from **Dev** to
+> **Live** using the toggle at the top of the dashboard. Meta's docs warn that
+> "some webhooks will not be sent if your app is in Dev mode." Going Live needs a
+> **Privacy Policy URL** under App settings → Basic (any valid policy URL works;
+> Side Kick's site is fine). It does NOT need Business Verification.
 
 ## Step 4 — Test it
 
