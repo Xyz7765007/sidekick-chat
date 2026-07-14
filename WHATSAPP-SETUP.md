@@ -72,8 +72,16 @@ WHATSAPP_APP_SECRET        = abc123...          # App Settings → Basic
 WHATSAPP_VERIFY_TOKEN      = <invent any string, e.g. sidekick_wa_7765007>
 WHATSAPP_ALLOWED_NUMBERS   = 91XXXXXXXXXX,91YYYYYYYYYY   # Kunal, you. No "+", comma-separated.
 WHATSAPP_PUSH_SECRET       = <invent any string>         # auth for /api/whatsapp/push
-OPENAI_API_KEY             = sk-...             # voice notes only (Whisper)
 ```
+
+**That's the whole list — no OpenAI key needed here.** Voice notes are transcribed
+by SignalScope's `/api/sidekick/transcribe`, which already has `OPENAI_API_KEY`.
+This app calls it with the `SIDEKICK_API_KEY` it already carries.
+
+(Why not Claude? The Anthropic Messages API takes text, images and PDFs — there is
+no audio input and no speech-to-text endpoint. Transcription is the one step in the
+flow that can't run on the Claude key. Everything downstream of the transcript —
+angles, comment, post, refine — still does.)
 
 **Env vars only take effect on the NEXT deployment.** After adding them, redeploy:
 `npx vercel --prod --yes` from the repo, or hit Redeploy in the Vercel dashboard.
