@@ -4315,18 +4315,25 @@ function NewsCard({ card, leaving, subject, onAction, onCopied, onFeedbackSubmit
                   leadCompany={card.company}
                   onSubmitted={onFeedbackSubmitted}
                 >
-                  <textarea
-                    className="li-comment-edit"
-                    value={opener}
-                    rows={Math.max(3, Math.min(8, Math.ceil((opener.length || 1) / 70)))}
-                    onChange={(e) => setOpener(e.target.value)}
-                  />
+                  {/* Icon-only copy in the box's top-right corner (Samarth
+                      Jul13) — no separate CTA-looking button below the box. */}
+                  <div className="copybox">
+                    <textarea
+                      className="li-comment-edit"
+                      value={opener}
+                      rows={Math.max(3, Math.min(8, Math.ceil((opener.length || 1) / 70)))}
+                      onChange={(e) => setOpener(e.target.value)}
+                    />
+                    <button
+                      className="copybox-btn"
+                      onClick={(e) => { e.stopPropagation(); copyOpener(); }}
+                      disabled={isDisabled || !opener.trim()}
+                      type="button"
+                      title="Copy opener"
+                      aria-label="Copy opener"
+                    >⧉</button>
+                  </div>
                 </FeedbackCapture>
-                <div className="li-comment-row">
-                  <button className="btn" onClick={copyOpener} disabled={isDisabled || !opener.trim()} type="button">
-                    ⧉ Copy opener
-                  </button>
-                </div>
               </div>
             )}
           </>

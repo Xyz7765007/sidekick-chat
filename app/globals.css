@@ -2342,6 +2342,33 @@ body { position: relative; }
   white-space: nowrap;
 }
 
+/* Icon-only copy button pinned to a draft box's top-right corner (Samarth
+   Jul13) — reusable: wrap the textarea in .copybox. Quiet until hover;
+   padding-right on the field keeps the first line clear of the icon. */
+.copybox { position: relative; }
+.copybox .li-comment-edit { padding-right: 36px; }
+.copybox-btn {
+  position: absolute;
+  top: 7px;
+  right: 7px;
+  width: 24px;
+  height: 24px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  background: var(--card, #fff);
+  color: var(--text-3);
+  font-size: 13px;
+  line-height: 1;
+  cursor: pointer;
+  padding: 0;
+  transition: color .16s ease, border-color .16s ease;
+}
+.copybox-btn:hover:not(:disabled) { color: var(--text); border-color: var(--border-2); }
+.copybox-btn:disabled { opacity: .45; cursor: default; }
+
 /* Post engagement counts (likes / comments) — Kunal Jun16 */
 .li-engagement { display: flex; gap: 14px; margin-top: 7px; }
 .li-eng-item { font-size: 12.5px; color: var(--text-2); display: inline-flex; align-items: center; gap: 4px; }
