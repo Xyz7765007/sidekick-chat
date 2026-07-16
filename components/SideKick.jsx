@@ -4144,11 +4144,12 @@ function LinkedInCommentCard({
 function parseNewsSignal(raw) {
   if (!raw || typeof raw !== "string") return null;
   const grab = (re) => { const m = raw.match(re); return m ? m[1].trim() : ""; };
-  const headline = grab(/📰\s*([\s\S]*?)\s*(?=🔗|📝|💡|→|💬|$)/u)
+  const headline = grab(/📰\s*([\s\S]*?)\s*(?=🔗|📎|📝|💡|→|💬|$)/u)
     .replace(/^(EXISTING LEAD|NEW COMPANY[^|]*?)\s*\|\s*/i, "").trim();
   const url = grab(/🔗\s*(\S+)/u);
-  const what = grab(/📝\s*(?:WHAT HAPPENED:)?\s*([\s\S]*?)(?=💡|→|💬|$)/u);
-  const why = grab(/💡\s*(?:WHY[^:]*:)?\s*([\s\S]*?)(?=→|💬|$)/u);
+  const postUrl = grab(/📎\s*(\S+)/u);
+  const what = grab(/📝\s*(?:WHAT HAPPENED:)?\s*([\s\S]*?)(?=📎|💡|→|💬|$)/u);
+  const why = grab(/💡\s*(?:WHY[^:]*:)?\s*([\s\S]*?)(?=📎|→|💬|$)/u);
   const opener = grab(/💬\s*(?:OPENER DRAFT:)?\s*([\s\S]*)$/u);
   const actions = raw.split("→").slice(1)
     .map((s) => s.split("💬")[0].trim())
@@ -4158,7 +4159,7 @@ function parseNewsSignal(raw) {
       return m ? { when: m[1].trim(), text: m[2].trim() } : { when: "", text: a };
     });
   if (!headline && !what && !opener) return null;
-  return { headline, url, what, why, actions, opener };
+  return { headline, url, postUrl, what, why, actions, opener };
 }
 
 function NewsCard({ card, leaving, subject, onAction, onCopied, onFeedbackSubmitted }) {
@@ -4166,6 +4167,7 @@ function NewsCard({ card, leaving, subject, onAction, onCopied, onFeedbackSubmit
   const isMarket = /new compan/i.test(card.task_rule || "");
   const isDisabled = leaving;
   const articleUrl = (parsed && parsed.url) || card.url || "";
+  const postUrl = (parsed && parsed.postUrl) || "";
   const linkedinUrl = card.lead_linkedin || "";
 
   const [opener, setOpener] = useState((parsed && parsed.opener) || "");
@@ -4276,6 +4278,14 @@ function NewsCard({ card, leaving, subject, onAction, onCopied, onFeedbackSubmit
                 <a className="news-source" href={articleUrl} target="_blank" rel="noopener noreferrer">
                   Read the article ↗
                 </a>
+              )}
+              {postUrl && (
+                <>
+                  {" "}
+                  <a className="news-source" href={postUrl} target="_blank" rel="noopener noreferrer">
+                    Open post ↗
+                  </a>
+                </>
               )}
             </div>
             {parsed.what && (
