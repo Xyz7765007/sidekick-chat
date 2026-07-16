@@ -56,12 +56,44 @@ number** for you.
    on WhatsApp that you must enter.
 8. **App settings → Basic → App secret** (click **Show**) → `WHATSAPP_APP_SECRET`.
 
-> ⚠️ The token from step 6 **expires in 24 hours**. Fine for a same-day test with
-> Kunal. The moment you want it to keep working: **Business settings → Users →
-> System users** → create a system user → give it Full control of the app + the
-> WhatsApp Business Account → **Generate new token** with `whatsapp_business_messaging`
-> + `whatsapp_business_management`. That token doesn't expire. Swap it into
-> `WHATSAPP_TOKEN` and redeploy.
+> ⚠️ **The token from step 6 expires in 24 HOURS.** This is the #1 thing that breaks
+> this setup: everything works, then silently stops ~a day later. The symptom is
+> that inbound messages still arrive (the webhook is fine) but no reply ever sends —
+> Meta rejects the send with `OAuthException code 190, subcode 463`.
+>
+> Check any token's real expiry (don't guess) with `debug_token`:
+> ```bash
+> curl -s "https://graph.facebook.com/v21.0/debug_token?input_token=<TOKEN>&access_token=<APP_ID>|<APP_SECRET>"
+> ```
+> Look at `is_valid` and `expires_at` (`0` = never expires).
+
+## Step 2b — Get a permanent token (do this before any real use)
+
+Verified against Meta's docs 16 Jul 2026. The temporary token is only for a same-day
+smoke test; a System User token never expires.
+
+1. <https://business.facebook.com/latest/settings> → sidebar → **Users → System users**.
+2. **Add+** (top-right) → name it e.g. `sidekick-wa` → role **Admin** → **Create system user**.
+3. Select it → **Assign assets**. **Both** are required — the app alone cannot send:
+   - **Apps** → *Side Kick - Chat App* → **Full control** (toggle **Manage app**)
+   - **WhatsApp accounts** → your WABA → **Full control** (toggle **Manage WhatsApp Business accounts**)
+   - → **Assign assets**
+4. **Generate token** → select the app → **Next**.
+5. Under **Assign Permissions**, tick **all three** (`business_management` is easy to
+   miss and is in Meta's own list):
+   - `business_management`
+   - `whatsapp_business_messaging`
+   - `whatsapp_business_management`
+6. If a **token expiration** dropdown appears, choose **Never**.
+7. **Generate token** → copy it. **Meta shows it once.**
+
+Then swap it in and rebuild:
+```bash
+npx vercel env rm WHATSAPP_TOKEN production --yes
+printf '%s' "<new token>" | npx vercel env add WHATSAPP_TOKEN production
+npx vercel deploy --prod --yes        # env vars only bind on the next deploy
+```
+Verify with `debug_token` before trusting it: `is_valid: true`, `expires_at: 0`.
 
 ## Step 2 — Set the env vars (Vercel → sidekick-chat → Settings → Environment Variables)
 
