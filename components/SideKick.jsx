@@ -589,6 +589,62 @@ function formatSignalText(raw) {
   return out;
 }
 
+// ─────────────────────────────────────────────────────────────────────
+// Post paragraph restore (ported from sidekick-posts, Samarth Jul-20)
+// The LinkedIn scan provider started returning post text with line breaks
+// STRIPPED (~Jul 8-12 2026): tasks ≤Jul-07 store real newlines, later scans
+// store one flat wall (verified against the Veloka Tasks table). Root fix
+// belongs at scan time; until then this display-layer fallback re-paragraphs
+// flat text instantly, and /api/restore-format (AI, same-characters
+// guarantee) swaps in the author's plausible breaks. Text that already has
+// newlines passes through UNTOUCHED — genuine formatting is never rewritten.
+const POST_LIST_MARKERS = ["👉", "➡️", "🔹", "✅", "⭐", "💡", "📌", "1️⃣", "2️⃣", "3️⃣", "4️⃣", "5️⃣", "6️⃣", "7️⃣", "8️⃣", "9️⃣", "🔟", "•"];
+const POST_MARKER_BREAK = new RegExp(`\\s+(?=(?:${POST_LIST_MARKERS.join("|")}))`, "gu");
+const POST_MARKER_START = new RegExp(`^(?:${POST_LIST_MARKERS.join("|")})`, "u");
+function restorePostParagraphs(raw) {
+  const text = (raw || "").trim();
+  if (!text || text.includes("\n") || text.length < 180) return text;
+  // 1) Hard breaks the author certainly had: before each inline list marker
+  //    (👉 / 1️⃣ / • items were one-per-line) and before a trailing hashtag run.
+  let pre = text.replace(POST_MARKER_BREAK, "\n");
+  const hashIdx = pre.search(/#[A-Za-z]/);
+  if (hashIdx > 0) {
+    const tail = pre.slice(hashIdx);
+    const tagCount = (tail.match(/#[A-Za-z]\w*/g) || []).length;
+    if (tagCount >= 2 && tail.length <= 220) {
+      pre = pre.slice(0, hashIdx).replace(/\s+$/, "") + "\n" + tail;
+    }
+  }
+  // 2) Everything else: one sentence per paragraph — over-breaking reads
+  //    LinkedIn, under-breaking reads like a wall. (The AI restore pass
+  //    supersedes this when it returns.)
+  const pieces = [];
+  for (const line of pre.split("\n")) {
+    const t = line.trim();
+    if (!t) continue;
+    if (POST_MARKER_START.test(t)) {
+      pieces.push({ marker: true, text: t });
+      continue;
+    }
+    for (const s of t.split(/(?<=[.!?…])\s+(?=[^a-z\s])/g)) {
+      if (s.trim()) pieces.push({ marker: false, text: s.trim() });
+    }
+  }
+  if (pieces.length < 3) return text;
+  // Consecutive list items sit on adjacent lines; prose gets blank lines.
+  let out2 = "";
+  for (let i = 0; i < pieces.length; i++) {
+    if (i === 0) out2 = pieces[i].text;
+    else if (pieces[i].marker && pieces[i - 1].marker) out2 += "\n" + pieces[i].text;
+    else out2 += "\n\n" + pieces[i].text;
+  }
+  return out2;
+}
+
+// Session cache of AI-restored post formatting, keyed by card id. Stores ""
+// for verified-failed restores so a bad post is attempted exactly once.
+const restoredPostCache = new Map();
+
 // handledAgo — compact relative time for the Handled panel rows.
 function handledAgo(iso) {
   if (!iso) return "";
@@ -3610,7 +3666,37 @@ function LinkedInCommentCard({
   // internal-scrubbed signal (summary-ish, better than nothing; those tasks
   // age out of the feed within 7 days).
   const [showFullPost, setShowFullPost] = useState(false);
-  const rawPostText = (card.post_text || "").trim();
+  // Ported from sidekick-posts (Samarth Jul-20): posts scanned after ~Jul 8
+  // arrive flattened by the provider. Two-layer restore: /api/restore-format
+  // asks a model to re-insert the author's line breaks under a strict
+  // same-characters guarantee (it can only move whitespace, never change
+  // words); until that lands — or if it fails verification — the
+  // deterministic heuristic keeps the post readable. Stored text with real
+  // newlines short-circuits both.
+  const storedPost = (card.post_text || "").trim();
+  const needsRestore = !!storedPost && !storedPost.includes("\n") && storedPost.length >= 180;
+  const [aiRestored, setAiRestored] = useState(() => restoredPostCache.get(card.id) || "");
+  useEffect(() => {
+    if (!needsRestore || restoredPostCache.has(card.id)) return;
+    let alive = true;
+    (async () => {
+      try {
+        const r = await fetch("/api/restore-format", {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ text: storedPost }),
+        });
+        const d = await r.json().catch(() => null);
+        const formatted = (d && d.ok && d.formatted) || "";
+        restoredPostCache.set(card.id, formatted);
+        if (alive && formatted) setAiRestored(formatted);
+      } catch {
+        restoredPostCache.set(card.id, "");
+      }
+    })();
+    return () => { alive = false; };
+  }, [card.id, needsRestore, storedPost]);
+  const rawPostText = aiRestored || restorePostParagraphs(storedPost);
   const fullPostText = rawPostText || stripInternalSignal(formatSignalText(card.signal));
   const hasFullPost = !!fullPostText;
 
@@ -3857,8 +3943,22 @@ function LinkedInCommentCard({
         )}
       </div>
 
-      {/* Title — author + context header */}
-      <div className="card-name">{subject}</div>
+      {/* Title — author + context header. Ported from sidekick-posts (Samarth
+          Jul-20): the name links to the real profile URL when the scan stored
+          one, LinkedIn people search otherwise; the company links to LinkedIn
+          company search (same fallback grammar as the connections card — no
+          company URL is stored on comment tasks). Visuals identical at rest;
+          hover shows a quiet underline. */}
+      <div className="card-name">
+        <a
+          className="card-name-link"
+          href={card.lead_linkedin || `https://www.linkedin.com/search/results/people/?keywords=${encodeURIComponent(subject)}`}
+          target="_blank"
+          rel="noopener noreferrer"
+          onClick={(e) => { e.stopPropagation(); if (isDisabled) e.preventDefault(); }}
+          title={card.lead_linkedin ? "Open LinkedIn profile" : "Search on LinkedIn"}
+        >{subject}</a>
+      </div>
       {/* Kunal Jun16: a clear "who posted this" context header so the exec
           has identity context BEFORE reading the post (his #1 ask — "this
           doesn't give me enough context as to who he is"). Uses only public
@@ -3869,9 +3969,16 @@ function LinkedInCommentCard({
           {card.lead_title ? <span className="li-author-role">{card.lead_title}</span> : null}
           {card.lead_title && card.company ? <span className="li-author-sep">·</span> : null}
           {card.company ? (
-            <span className="li-author-co">
+            <a
+              className="li-author-co li-author-co-link"
+              href={`https://www.linkedin.com/search/results/companies/?keywords=${encodeURIComponent(card.company)}`}
+              target="_blank"
+              rel="noopener noreferrer"
+              onClick={(e) => { e.stopPropagation(); if (isDisabled) e.preventDefault(); }}
+              title={`Find ${card.company} on LinkedIn`}
+            >
               {card.movement_type === "Exited" ? `Ex-${card.company}` : card.company}
-            </span>
+            </a>
           ) : null}
         </div>
       ) : (meta && <div className="card-meta">{meta}</div>)}
