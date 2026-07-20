@@ -110,8 +110,13 @@ export async function POST(request) {
     return Response.json({ ok: false, error: "Invalid JSON" }, { status: 400 });
   }
 
-  const { lead_name, company, lead_title, signal, url, angle, feedback, regenerate } = body || {};
-  const postText = typeof signal === "string" ? signal.slice(0, POST_TEXT_CAP) : "";
+  const { lead_name, company, lead_title, post_text, signal, url, angle, feedback, regenerate } = body || {};
+  // Ported from sidekick-posts (Samarth Jul-20): ground on the REAL post.
+  // `signal` is the INTERNAL brief (it carries a pre-written suggested
+  // comment + score + rule names), so grounding on it made the model
+  // paraphrase our own suggestion. Fallback only for legacy tasks.
+  const realPost = typeof post_text === "string" ? post_text.trim() : "";
+  const postText = (realPost || (typeof signal === "string" ? signal : "")).slice(0, POST_TEXT_CAP);
   const angleLabel = angle?.label ? String(angle.label).slice(0, 80) : "";
   const angleHint = angle?.hint ? String(angle.hint).slice(0, 240) : "";
   if (!angleLabel && !angleHint) {

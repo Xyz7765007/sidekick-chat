@@ -1823,7 +1823,8 @@ export default function SideKick() {
         lead_name: card.lead_name,
         company: card.company,
         lead_title: card.lead_title,
-        // signal carries the post content; route caps + strips internal markers
+        // Real post first (Samarth Jul-20) — `signal` is the internal brief.
+        post_text: card.post_text || "",
         signal: card.signal,
         url: card.url || card.lead_linkedin || "",
         // learned comment prefs bias the suggested angles
@@ -3833,6 +3834,7 @@ function LinkedInCommentCard({
           lead_name: card.lead_name,
           company: card.company,
           lead_title: card.lead_title,
+          post_text: rawPostText || card.post_text || "",
           signal: card.signal,
           url: postUrl,
           angle: { label: angle.label, hint: angle.hint },

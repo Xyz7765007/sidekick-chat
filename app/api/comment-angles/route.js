@@ -107,6 +107,15 @@ function buildAvoidBlock(avoidAngles) {
   return `ALREADY SHOWN — the operator saw these angles and wants DIFFERENT ones. Produce 3 genuinely NEW angles that take different lenses from every angle below (no rewordings):\n${lines.join("\n")}`;
 }
 
+// Trim to a max length WITHOUT cutting a word in half (ported Jul-20).
+function clipWords(raw, max) {
+  const s = String(raw || "").replace(/\s+/g, " ").trim();
+  if (s.length <= max) return s;
+  const cut = s.slice(0, max - 1);
+  const lastSpace = cut.lastIndexOf(" ");
+  return (lastSpace > max * 0.6 ? cut.slice(0, lastSpace) : cut).replace(/[,;:.\-—]$/, "") + "…";
+}
+
 function safeParseJson(text) {
   if (!text) return null;
   let t = text.trim();
@@ -136,8 +145,13 @@ export async function POST(request) {
     return Response.json({ ok: false, error: "Invalid JSON" }, { status: 400 });
   }
 
-  const { lead_name, company, lead_title, signal, url, feedback, avoidAngles } = body || {};
-  const postText = typeof signal === "string" ? signal.slice(0, POST_TEXT_CAP) : "";
+  const { lead_name, company, lead_title, post_text, signal, url, feedback, avoidAngles } = body || {};
+  // Ported from sidekick-posts (Samarth Jul-20): ground on the REAL post.
+  // `signal` is the INTERNAL brief (it carries a pre-written suggested
+  // comment + score + rule names), so grounding on it made the model
+  // paraphrase our own suggestion. Fallback only for legacy tasks.
+  const realPost = typeof post_text === "string" ? post_text.trim() : "";
+  const postText = (realPost || (typeof signal === "string" ? signal : "")).slice(0, POST_TEXT_CAP);
   if (!postText && !lead_name) {
     return Response.json({ ok: false, error: "post context required" }, { status: 400 });
   }
@@ -195,7 +209,7 @@ export async function POST(request) {
     const angles = (parsed.angles || []).slice(0, 3).map((a, i) => ({
       id: a?.id || `a${i + 1}`,
       label: String(a?.label || `Angle ${i + 1}`).slice(0, 60),
-      hint: String(a?.hint || "").slice(0, 200),
+      hint: clipWords(a?.hint, 200),
     }));
     const bullets = Array.isArray(parsed.bullets)
       ? parsed.bullets.map(b => String(b).slice(0, 140)).filter(Boolean).slice(0, 4)
