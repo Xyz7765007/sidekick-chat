@@ -21,6 +21,8 @@
 // drafted post must read like the operator wrote it, zero internal jargon.
 // ═══════════════════════════════════════════════════════════════════
 
+import { deEmDash } from "../../../lib/text-style.js";
+
 export const dynamic = "force-dynamic";
 export const fetchCache = "force-no-store";
 export const maxDuration = 30;
@@ -169,7 +171,7 @@ export async function POST(request) {
       if (out.error) return Response.json({ ok: false, error: out.error }, { status: 500 });
       const post = out.text.replace(/^["']|["']$/g, "").trim();
       if (!post) return Response.json({ ok: false, error: "Empty post returned" }, { status: 500 });
-      return Response.json({ ok: true, post: post.slice(0, 3000) });
+      return Response.json({ ok: true, post: deEmDash(post).slice(0, 3000) });
     }
 
     // ── MODE: refine ── current draft + feedback → revised draft ──
@@ -183,7 +185,7 @@ export async function POST(request) {
       if (out.error) return Response.json({ ok: false, error: out.error }, { status: 500 });
       const revised = out.text.replace(/^["']|["']$/g, "").trim();
       if (!revised) return Response.json({ ok: false, error: "Empty revision returned" }, { status: 500 });
-      return Response.json({ ok: true, post: revised.slice(0, 3000) });
+      return Response.json({ ok: true, post: deEmDash(revised).slice(0, 3000) });
     }
 
     return Response.json({ ok: false, error: `Unknown mode: ${mode}` }, { status: 400 });

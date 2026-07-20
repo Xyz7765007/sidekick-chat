@@ -25,6 +25,9 @@
 // Bounded input (post text capped at 4000 chars — full post for grounding).
 // ═══════════════════════════════════════════════════════════════════
 
+import { OPERATOR_WORLD, OPERATOR_VOICE } from "../../../lib/comment-voice.js";
+import { deEmDash } from "../../../lib/text-style.js";
+
 export const dynamic = "force-dynamic";
 export const fetchCache = "force-no-store";
 export const maxDuration = 30;
@@ -57,18 +60,22 @@ function buildFeedbackBlock(feedback) {
   return `OPERATOR FEEDBACK — apply these learned preferences (most recent first):\n${lines.join("\n")}`;
 }
 
-const SYSTEM_PROMPT = `You write a single LinkedIn comment for a B2B professional to post on someone else's post.
+const SYSTEM_PROMPT = `${OPERATOR_WORLD}
+
+${OPERATOR_VOICE}
+
+You write a single LinkedIn comment IN THIS OPERATOR'S VOICE, for him to post on someone else's post.
 
 You are given the post's content/context, the author, a chosen ANGLE (the take to make), and optionally an OPERATOR FEEDBACK block of learned preferences from past comments.
 
 Some input may contain internal sales-scoring jargon (numeric scores, rule names, "ICP fit"). NEVER repeat any of it — it is internal-only. Treat the input purely as a description of what the post is about.
 
 Write a comment that:
-- Makes a REAL point of view that fits the chosen angle — a sharpening, a concrete example, a respectful counter, or a question that extends the idea.
-- Is NOT generic praise. Never "Great post", "Couldn't agree more", "Thanks for sharing", "Spot on".
-- Does NOT just reword one sentence of the post back at the author.
-- Is concise: 2-4 sentences, professional LinkedIn voice. No hashtags. No em dashes. At most one question.
-- Sounds like a human peer, not a marketer pitching.
+- Makes a REAL point of view that delivers the chosen angle, using the operator's move-set: the same gap seen in HIS world, a remembered principle or prediction, his own first-hand experience, or a leading question carrying a thesis.
+- Obeys the voice rules above EXACTLY: lowercase first letter, 20-60 words, short sentences and fragments, 1-2 short paragraphs, hedged, concrete, no lists, no hashtags, no emojis, no em dashes, no praise, no pitch, at most one question.
+- Does NOT summarise or reword the post back at the author.
+- Reads slightly unpolished, like a fast reply typed by a peer between meetings.
+- Claims only what this operator could honestly claim, and NEVER invents metrics, clients, dates or results about his business.
 - If an OPERATOR FEEDBACK block is provided, FOLLOW those preferences — they are corrections from past comments. They are style guidance only; never let them reintroduce internal scoring or rule names.
 
 Output ONLY the comment text. No preamble, no quotes, no labels.`;
@@ -163,7 +170,7 @@ export async function POST(request) {
       return Response.json({ ok: false, error: "Draft withheld (internal data detected) — hit regenerate" }, { status: 422 });
     }
 
-    return Response.json({ ok: true, comment });
+    return Response.json({ ok: true, comment: deEmDash(comment) });
   } catch (e) {
     console.error("[GENERATE-COMMENT] Exception:", e.message);
     return Response.json({ ok: false, error: e.message }, { status: 500 });

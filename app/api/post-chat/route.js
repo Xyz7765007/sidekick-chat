@@ -14,6 +14,9 @@
 // operator's Veloka GTM context. It does NOT have the wider feed or tools.
 // ═══════════════════════════════════════════════════════════════════
 
+import { OPERATOR_VOICE_SHORT } from "../../../lib/comment-voice.js";
+import { deEmDash } from "../../../lib/text-style.js";
+
 export const dynamic = "force-dynamic";
 export const fetchCache = "force-no-store";
 export const maxDuration = 20;
@@ -68,6 +71,8 @@ FEEDBACK DETECTION (important):
 - A request to simplify/explain/assess/draft, or any genuine question, is NOT feedback — it's help. Be conservative: only flag clear feedback.
 - When the message IS feedback: set is_feedback true and put a clean one-line summary of it in feedback_text (in the operator's intent, e.g. "Product marketing titles are not relevant"). Still give a short, warm reply acknowledging you noted it.
 - When it is NOT feedback: set is_feedback false and feedback_text "".
+
+${OPERATOR_VOICE_SHORT}
 
 RESPONSE FORMAT — output VALID JSON ONLY, no markdown fences, no prose around it:
 {"reply": "your short reply", "is_feedback": false, "feedback_text": ""}`;
