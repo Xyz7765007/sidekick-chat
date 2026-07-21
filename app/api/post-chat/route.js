@@ -1,6 +1,6 @@
 // ═══════════════════════════════════════════════════════════════════
 // POST /api/post-chat   (per-TASK context chatbot)
-// Body: { message, post?, author?, history?, leadContext? }
+// Body: { message, post?, author?, history?, leadContext?, commentContext? }
 //   - message : the exec's question ("simplify this", "who is this", "is this a fit")
 //   - post    : the raw LinkedIn post text (when the task is a post). Optional —
 //               non-post tasks (connection accepted, DM reply, etc.) have none.
@@ -9,13 +9,16 @@
 //   - leadContext : optional { score, signal, task_rule, task_type } — the card's
 //               INTERNAL context (why it surfaced, fit score, the signal event).
 //               Used for the bot's REASONING only; never leaked into drafted copy.
+//   - commentContext : optional { angle, draft, canPost } — the comment the
+//               operator is drafting on the card, so the chat can revise it or
+//               post it on command.
 //
-// Returns { ok, reply, feedback? }. Scoped to ONE task (this post/lead) + the
-// operator's Veloka GTM context. It does NOT have the wider feed or tools.
+// Returns { ok, reply, feedback?, revised_comment?, post_comment? }. Scoped to
+// ONE task (this post/lead) + the operator's Veloka GTM context.
 // ═══════════════════════════════════════════════════════════════════
 
-import { OPERATOR_VOICE_SHORT } from "../../../lib/comment-voice.js";
 import { deEmDash } from "../../../lib/text-style.js";
+import { OPERATOR_VOICE_SHORT } from "../../../lib/comment-voice.js";
 
 export const dynamic = "force-dynamic";
 export const fetchCache = "force-no-store";
@@ -25,6 +28,56 @@ const ANTHROPIC_API_KEY = process.env.ANTHROPIC_API_KEY;
 // Sonnet 4.6 (Samarth Jun16): richer "who is this / why does this matter"
 // reasoning than Haiku for the per-post helper. Override via POST_CHAT_MODEL.
 const POST_CHAT_MODEL = process.env.POST_CHAT_MODEL || "claude-sonnet-4-6";
+
+// ── Standing operator feedback (QA 2026-07-20) ──────────────────────────
+// task_feedback rows (ask-box detected feedback + "Skip reason: …" notes)
+// were being STORED in the Sidekick Feedback table but consumed by nothing:
+// the backend preferences endpoint whitelists only comment/connection_note/dm.
+// Close the loop: read the recent rows via SignalScope's public /api/airtable
+// list action and inject them into every per-task chat as standing context, so
+// what the operator said last week actually shapes what the bot advises this
+// week. 60s in-memory cache — one upstream read per lambda per minute, and a
+// fetch failure just falls back to the last good list (never blocks the chat).
+const SIGNALSCOPE_URL = process.env.SIGNALSCOPE_API_URL;
+const BASE_ID = process.env.VELOKA_BASE_ID;
+let fbCache = { at: 0, lines: [] };
+async function standingFeedback() {
+  if (!SIGNALSCOPE_URL || !BASE_ID) return [];
+  if (Date.now() - fbCache.at < 60000) return fbCache.lines;
+  try {
+    const r = await fetch(`${SIGNALSCOPE_URL.replace(/\/$/, "")}/api/airtable`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({
+        action: "list",
+        baseId: BASE_ID,
+        table: "Sidekick Feedback",
+        params: {
+          filterByFormula: `{Item Type} = "task_feedback"`,
+          sort: [{ field: "Created At", direction: "desc" }],
+          maxRecords: 12,
+          fields: ["Feedback Text", "Lead Name", "Lead Company"],
+        },
+      }),
+      cache: "no-store",
+    });
+    const d = await r.json();
+    const lines = Array.isArray(d?.records)
+      ? d.records
+          .map((rec) => {
+            const f = rec.fields || {};
+            if (!f["Feedback Text"]) return null;
+            const who = [f["Lead Name"], f["Lead Company"]].filter(Boolean).join(" at ");
+            return `- ${String(f["Feedback Text"]).slice(0, 200)}${who ? ` (given on: ${who})` : ""}`;
+          })
+          .filter(Boolean)
+      : [];
+    fbCache = { at: Date.now(), lines };
+    return lines;
+  } catch {
+    return fbCache.lines || [];
+  }
+}
 
 // Pull a JSON object out of the model reply, tolerating stray fences/prose.
 function extractJSON(raw) {
@@ -72,10 +125,24 @@ FEEDBACK DETECTION (important):
 - When the message IS feedback: set is_feedback true and put a clean one-line summary of it in feedback_text (in the operator's intent, e.g. "Product marketing titles are not relevant"). Still give a short, warm reply acknowledging you noted it.
 - When it is NOT feedback: set is_feedback false and feedback_text "".
 
+THE COMMENT THE OPERATOR IS DRAFTING (when a COMMENT WORKSPACE block appears below):
+- You can see the ANGLE they picked and their CURRENT DRAFT comment. Treat that draft as the live working copy — they are looking at it on screen right now.
+- If they ask you to CHANGE the comment ("make it shorter", "punchier", "add a stat", "less salesy", "cut the last line", "rewrite it as a question"), return the FULL revised comment in "revised_comment". It replaces their draft in the box, so return the whole comment, not a diff or a fragment, and keep it in their voice.
+- Honor the chosen angle when revising unless they ask to move off it. Same rules as any comment: specific, no empty praise, no internal scoring language, no em dashes.
+- If they are only ASKING about the comment or the angle ("why this angle", "is this too long", "does this sound salesy"), answer in "reply" and leave "revised_comment" empty. Do not rewrite unless they asked for a change.
+- When there is no draft yet, help them think about the angle; do not invent a draft unless asked.
+
+POSTING THE COMMENT (only when a COMMENT WORKSPACE block is present AND it says posting is available):
+- The operator can tell you to POST the comment to LinkedIn: "comment this", "comment it", "post it", "post this", "ok comment that", "go ahead and comment", "yes post it". When they do, put the EXACT text to post in "post_comment".
+- Which text to post: if they just said "comment it" / "post it", use the CURRENT DRAFT. If they asked you to change it and then post ("shorten it and comment"), first revise, put the revised text in BOTH "revised_comment" and "post_comment". If they pasted their own comment in the message and said "comment this: <text>", use their pasted text. If they liked a comment you just proposed in the previous turn and said "comment that", use that proposed comment verbatim.
+- "post_comment" must be the finished, ready-to-post comment in the operator's voice, obeying the same rules (lowercase, no em dashes, no praise, no pitch). Do NOT post_comment unless they clearly asked to post. A question or an edit request is not a post request.
+- When you set post_comment, keep "reply" to a short confirmation like "posting that now." Never fabricate that it is already posted.
+- If there is no draft and nothing to post, leave post_comment empty and ask them what to comment.
+
 ${OPERATOR_VOICE_SHORT}
 
 RESPONSE FORMAT — output VALID JSON ONLY, no markdown fences, no prose around it:
-{"reply": "your short reply", "is_feedback": false, "feedback_text": ""}`;
+{"reply": "your short reply", "is_feedback": false, "feedback_text": "", "revised_comment": "", "post_comment": ""}`;
 
 export async function POST(request) {
   if (!ANTHROPIC_API_KEY) {
@@ -89,7 +156,7 @@ export async function POST(request) {
     return Response.json({ ok: false, error: "Invalid JSON" }, { status: 400 });
   }
 
-  const { message, post, author, history, leadContext } = body || {};
+  const { message, post, author, history, leadContext, commentContext } = body || {};
   if (!message || !String(message).trim()) {
     return Response.json({ ok: false, error: "message required" }, { status: 400 });
   }
@@ -102,8 +169,6 @@ export async function POST(request) {
   }
 
   // Pin the task's context into the system prompt so it can't be argued away.
-  // Three parts: who (author), the post (if any), and the INTERNAL context
-  // (score/rule/signal) the bot may reason with but must not leak into copy.
   const taskTypeLabel = lc.task_rule ? String(lc.task_rule).trim()
     : (lc.task_type ? String(lc.task_type).trim() : "");
   const contextBlock = [
@@ -122,6 +187,22 @@ export async function POST(request) {
     signalText ? `- Signal / why this surfaced:\n${signalText.slice(0, 3000)}` : null,
   ].filter(v => v !== null && v !== undefined).join("\n");
 
+  // The comment the operator is actively drafting on the card (angle + draft).
+  const cc = (commentContext && typeof commentContext === "object") ? commentContext : null;
+  const ccAngle = cc && cc.angle && typeof cc.angle === "object" ? cc.angle : null;
+  const ccDraft = cc && typeof cc.draft === "string" ? cc.draft.trim() : "";
+  const commentBlock = cc
+    ? [
+        "",
+        "COMMENT WORKSPACE (what the operator has on screen right now):",
+        ccAngle && ccAngle.label ? `- Chosen angle: ${String(ccAngle.label).slice(0, 120)}` : null,
+        ccAngle && ccAngle.hint ? `- Angle direction: ${String(ccAngle.hint).slice(0, 400)}` : null,
+        ccDraft ? "- Current draft comment:" : "- No draft written yet.",
+        ccDraft ? `"""\n${ccDraft.slice(0, 3000)}\n"""` : null,
+        cc.canPost ? "- Posting to LinkedIn IS available. If the operator tells you to comment/post it, return post_comment." : "- Posting is not available for this task (no post link).",
+      ].filter(v => v !== null).join("\n")
+    : "";
+
   // Carry a short rolling history (last 6 turns) so follow-ups work, but
   // keep it bounded — this is a quick helper, not a long thread.
   const priorTurns = Array.isArray(history)
@@ -132,6 +213,12 @@ export async function POST(request) {
     : [];
 
   const messages = [...priorTurns, { role: "user", content: String(message).slice(0, 2000) }];
+
+  // Standing operator feedback shapes every new interaction. Best-effort.
+  const fbLines = await standingFeedback();
+  const feedbackBlock = fbLines.length
+    ? `\n\nSTANDING OPERATOR FEEDBACK (notes this operator gave on earlier tasks, most recent first — honor these when judging fit, advising, or drafting; do not repeat what they flagged):\n${fbLines.join("\n")}`
+    : "";
 
   try {
     const r = await fetch("https://api.anthropic.com/v1/messages", {
@@ -144,7 +231,7 @@ export async function POST(request) {
       body: JSON.stringify({
         model: POST_CHAT_MODEL,
         max_tokens: 500,
-        system: `${SYSTEM_PROMPT}\n\n${contextBlock}`,
+        system: `${SYSTEM_PROMPT}\n\n${contextBlock}${commentBlock}${feedbackBlock}`,
         messages,
       }),
     });
@@ -161,25 +248,38 @@ export async function POST(request) {
       return Response.json({ ok: false, error: "Empty reply returned" }, { status: 500 });
     }
 
-    // The model is asked to return {reply, is_feedback, feedback_text}. Parse it;
-    // if parsing fails (model slipped into plain prose), treat the whole thing as
-    // the reply with no feedback — the chat never breaks on a format miss.
     const parsed = extractJSON(raw);
-    const reply = parsed && typeof parsed.reply === "string" && parsed.reply.trim()
-      ? parsed.reply.trim()
-      : raw;
+    // Raw-fallback ONLY when parsing genuinely failed (model slipped into prose).
+    const parsedReply = parsed && typeof parsed.reply === "string" ? parsed.reply.trim() : "";
+    const hasRevision = !!(parsed && typeof parsed.revised_comment === "string" && parsed.revised_comment.trim());
+    const reply = parsedReply
+      ? parsedReply
+      : parsed
+        ? (hasRevision ? "Updated the comment above." : "Done.")
+        : raw;
     const isFeedback = !!(parsed && parsed.is_feedback === true);
     const feedbackText = isFeedback && typeof parsed.feedback_text === "string"
       ? parsed.feedback_text.trim()
       : "";
 
-    // feedback (when present) tells the client to durably capture it via the
-    // /api/feedback proxy. We don't auto-enforce a feed suppression rule here —
-    // capture-and-acknowledge keeps a wrong read from silently nuking tasks.
+    const revisedRaw = parsed && typeof parsed.revised_comment === "string"
+      ? parsed.revised_comment.trim()
+      : "";
+    const revised = cc && revisedRaw && revisedRaw !== ccDraft
+      ? deEmDash(revisedRaw).slice(0, 3000)
+      : "";
+
+    // Post-comment intent: only honored when a workspace is open AND posting is
+    // available. Cleaned through the same house-style pass as any drafted copy.
+    const postRaw = parsed && typeof parsed.post_comment === "string" ? parsed.post_comment.trim() : "";
+    const toPost = cc && cc.canPost && postRaw ? deEmDash(postRaw).slice(0, 1250) : "";
+
     return Response.json({
       ok: true,
       reply,
       feedback: isFeedback && feedbackText ? { text: feedbackText } : null,
+      revised_comment: revised || null,
+      post_comment: toPost || null,
     });
   } catch (e) {
     console.error("[POST-CHAT] Exception:", e.message);

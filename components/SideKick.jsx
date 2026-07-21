@@ -3708,6 +3708,10 @@ function LinkedInCommentCard({
   const [askMsgs, setAskMsgs] = useState([]);
   const [askInput, setAskInput] = useState("");
   const [askBusy, setAskBusy] = useState(false);
+  // Auto-comment (Kunal Jul-20): real public side effect, so posting is always
+  // gated behind an explicit confirm and shows a posting spinner. Works via the
+  // chat here even when the angle helper is off; via the CTA when it is on.
+  const [posting, setPosting] = useState(false);
   const askThreadRef = useRef(null);
   useEffect(() => { setAskMsgs([]); setAskInput(""); setAskBusy(false); }, [card.id]);
   useEffect(() => {
@@ -3729,10 +3733,36 @@ function LinkedInCommentCard({
           author: postAuthorLine(card),
           history: askMsgs.slice(-6),
           leadContext: { score: card.score, signal: card.signal, task_rule: card.task_rule, task_type: card.task_type },
+          // The chat can see the comment work and post it on command (Kunal
+          // Jul-20). Sent whenever the post is postable, so the chat works even
+          // with the angle helper off (the operator can ask it to draft + post).
+          commentContext: postUrl
+            ? {
+                angle: chosenAngleId === "custom"
+                  ? { label: "Operator's own", hint: "The operator ignored the suggested angles and is writing this himself." }
+                  : (chosenAngleId ? (angles.find((a) => a.id === chosenAngleId) || null) : null),
+                draft: comment || "",
+                canPost: true,
+              }
+            : null,
         }),
       });
       const d = await r.json();
       setAskMsgs((m) => [...m, { role: "assistant", text: d?.ok ? d.reply : (d?.error || "Couldn't answer that.") }]);
+      // Chat revised the comment in place.
+      if (d?.ok && d.revised_comment && showCommentAssist) {
+        setComment(d.revised_comment);
+        setCommentStatus("ready");
+        onCopied?.("Comment updated from your note");
+      }
+      // Chat-triggered posting: "comment it", "ok comment that", "post this".
+      if (d?.ok && d.post_comment && typeof d.post_comment === "string" && d.post_comment.trim()) {
+        if (showCommentAssist && (!comment.trim() || d.post_comment.trim() !== comment.trim())) {
+          setComment(d.post_comment.trim());
+          setCommentStatus("ready");
+        }
+        postCommentToLinkedIn(d.post_comment.trim());
+      }
       if (d?.ok && d.feedback?.text) {
         fetch("/api/feedback", {
           method: "POST",
@@ -3916,10 +3946,47 @@ function LinkedInCommentCard({
       .catch(() => {}); // best-effort; never block the operator's posting flow
   }
 
+  // Auto-post a comment to LinkedIn via Unipile (Kunal Jul-20). Real, public,
+  // irreversible — so it ALWAYS confirms first (that click IS the approval),
+  // shows a spinner, records the exact posted text as a voice exemplar, and
+  // marks the task done on success. Used by the card CTA (when the helper is
+  // on) and by chat-triggered posting ("comment it").
+  async function postCommentToLinkedIn(text) {
+    const t = (text || "").trim();
+    if (!t || posting) return false;
+    if (!postUrl) { onCopied?.("No post link on this card, can't comment. Open it on LinkedIn."); return false; }
+    const who = card.lead_name ? `${card.lead_name}'s` : "this";
+    const preview = t.length > 200 ? t.slice(0, 200) + "…" : t;
+    if (typeof window !== "undefined" &&
+        !window.confirm(`Post this comment on ${who} LinkedIn post?\n\n"${preview}"`)) return false;
+    setPosting(true);
+    try {
+      const r = await fetch("/api/comment-linkedin", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ postUrl, text: t }),
+      });
+      const d = await r.json().catch(() => null);
+      if (d?.ok) {
+        captureCommentExemplar(t);
+        onCopied?.("Commented on LinkedIn ✓");
+        onAction(card.id, "done");
+        return true;
+      }
+      onCopied?.(`Couldn't post: ${d?.error || "try again"}`, 4200);
+      return false;
+    } catch (e) {
+      onCopied?.(`Network error posting the comment`, 4200);
+      return false;
+    } finally {
+      setPosting(false);
+    }
+  }
+
+  // The card's primary CTA POSTS the comment (Kunal Jul-20). Manual path still
+  // exists: "Open on LinkedIn" in the footer + copy from the textarea.
   function commentOnLinkedIn() {
-    if (postUrl) window.open(postUrl, "_blank", "noopener,noreferrer");
-    copyToClipboard(comment, () => onCopied?.("Comment copied — paste it on LinkedIn."));
-    captureCommentExemplar(comment);
+    postCommentToLinkedIn(comment);
   }
 
   // Stripped-card CTA (Kunal Jun12): no AI comment to copy — just open the
@@ -4175,11 +4242,13 @@ function LinkedInCommentCard({
                 <button
                   className="btn primary"
                   onClick={commentOnLinkedIn}
-                  disabled={isDisabled || !comment.trim()}
+                  disabled={isDisabled || posting || !comment.trim()}
                   type="button"
-                  title="Opens the post in a new tab and copies your comment"
+                  title="Posts this comment on LinkedIn from your account"
                 >
-                  ↗ Comment on LinkedIn
+                  {posting
+                    ? <><span className="spinner spinner-sm" /> Posting…</>
+                    : "↗ Comment on LinkedIn"}
                 </button>
               </div>
             </>
